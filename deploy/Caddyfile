@@ -1,0 +1,10 @@
+# TLS-terminating reverse proxy in front of extshare (Caddy obtains certificates automatically).
+# Run the server with TRUST_PROXY=true so audit logs record the real client IP.
+extshare.example.com {
+	request_body {
+		max_size 70MB
+	}
+	reverse_proxy 127.0.0.1:8787 {
+		header_up X-Forwarded-For {remote_host}
+	}
+}
