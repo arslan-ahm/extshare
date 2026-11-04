@@ -11,7 +11,14 @@ import { startScheduler } from "./scheduler";
 import { RateLimiter, Signer } from "./security";
 import { SqliteStore } from "./store/sqlite";
 
-const env = loadEnv(process.env);
+let env: ReturnType<typeof loadEnv>;
+try {
+  env = loadEnv(process.env);
+} catch (e) {
+  console.error((e as Error).message);
+  console.error("See .env.example for every setting.");
+  process.exit(1);
+}
 mkdirSync(env.DATA_DIR, { recursive: true, mode: 0o700 });
 
 const now = () => Date.now();

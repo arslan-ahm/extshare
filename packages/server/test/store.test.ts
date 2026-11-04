@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryStore } from "../src/store/memory";
-import { encodePatch, ROW_MAPPERS } from "../src/store/sqlite";
+import { encodePatch, MIGRATIONS, ROW_MAPPERS } from "../src/store/sqlite";
 import { storeContract } from "./store-contract";
 
 describe("MemoryStore contract", () => {
@@ -28,6 +28,15 @@ describe("SqliteStore mapping vs migrations/001_init.sql", () => {
       }));
     tables.set(m[1]!, cols);
   }
+
+  test("every migration file is embedded in MIGRATIONS, in order, byte for byte", () => {
+    const dir = join(import.meta.dir, "../src/store/migrations");
+    const files = readdirSync(dir)
+      .filter((f) => f.endsWith(".sql"))
+      .sort();
+    expect(MIGRATIONS.map((m) => m.name)).toEqual(files);
+    for (const m of MIGRATIONS) expect(m.sql).toBe(readFileSync(join(dir, m.name), "utf8"));
+  });
 
   test("migration defines all tables", () => {
     expect([...tables.keys()].sort()).toEqual(

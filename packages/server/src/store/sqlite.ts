@@ -1,7 +1,6 @@
 import { Database } from "bun:sqlite";
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { ReleaseState } from "@extshare/core";
+import migration001 from "./migrations/001_init.sql" with { type: "text" };
 import type {
   ApiToken,
   AuditEntry,
@@ -21,10 +20,16 @@ import type {
 type Row = Record<string, unknown>;
 type Bindable = string | number | null;
 
-const MIGRATIONS_DIR = join(import.meta.dir, "migrations");
+/**
+ * Ordered migrations, embedded at build time so a bundled server needs no files beside it.
+ * Add new files here in order; never edit one that has shipped.
+ */
+export const MIGRATIONS: readonly { name: string; sql: string }[] = [
+  { name: "001_init.sql", sql: migration001 },
+];
 
-/** Applies every migration in migrations/ not yet recorded in schema_migrations, in filename order. */
-export function migrate(db: Database, dir = MIGRATIONS_DIR): string[] {
+/** Applies every migration not yet recorded in schema_migrations, in order. Returns the names applied. */
+export function migrate(db: Database, migrations = MIGRATIONS): string[] {
   db.run("CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)");
   const done = new Set(
     db
@@ -33,16 +38,13 @@ export function migrate(db: Database, dir = MIGRATIONS_DIR): string[] {
       .map((r) => (r as Row).name as string),
   );
   const applied: string[] = [];
-  for (const file of readdirSync(dir)
-    .filter((f) => f.endsWith(".sql"))
-    .sort()) {
-    if (done.has(file)) continue;
-    const sql = readFileSync(join(dir, file), "utf8");
+  for (const m of migrations) {
+    if (done.has(m.name)) continue;
     db.transaction(() => {
-      db.run(sql);
-      db.query("INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)").run(file, Date.now());
+      db.run(m.sql);
+      db.query("INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)").run(m.name, Date.now());
     })();
-    applied.push(file);
+    applied.push(m.name);
   }
   return applied;
 }

@@ -1,16 +1,14 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { ApiErrorBody } from "@extshare/core";
 import { Hono } from "hono";
 import { AppError, type Deps } from "../context";
 import { AuthService } from "../services/auth";
 import { ReleaseService } from "../services/releases";
 import { apiRoutes } from "./api";
+// Inlined at build time so the bundled server ships as a single file.
+import CSS from "./assets/app.css" with { type: "text" };
 import { dashboardRoutes } from "./dashboard";
 import { gatewayRoutes } from "./gateway";
 import { Layout } from "./views";
-
-const CSS = readFileSync(join(import.meta.dir, "assets", "app.css"));
 
 export function createApp(deps: Deps) {
   const auth = new AuthService(deps);
