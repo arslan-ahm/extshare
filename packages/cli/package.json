@@ -4,5 +4,7 @@
   "private": true,
   "type": "module",
   "main": "src/index.ts",
-  "dependencies": { "@extshare/core": "workspace:*" }
+  "dependencies": {
+    "@extshare/core": "workspace:*"
+  }
 }

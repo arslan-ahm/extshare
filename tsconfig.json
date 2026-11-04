@@ -16,5 +16,5 @@
     "types": ["bun"],
     "lib": ["ES2022", "DOM"]
   },
-  "include": ["packages/*/src", "packages/*/test", "packages/*/scripts"]
+  "include": ["packages/*/src", "packages/*/test"]
 }
