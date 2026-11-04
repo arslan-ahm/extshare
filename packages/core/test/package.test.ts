@@ -261,3 +261,65 @@ describe("zip safety", () => {
     expect(inspectPackage(bytes.subarray(0, bytes.length - 30)).ok).toBe(false);
   });
 });
+
+describe("zip integrity against forged headers", () => {
+  const eocdOf = (v: DataView, len: number) => {
+    let i = len - 22;
+    while (v.getUint32(i, true) !== 0x06054b50) i--;
+    return i;
+  };
+  /** Patches a field of the first central-directory entry (and the matching local-header field). */
+  function forge(
+    z: Uint8Array,
+    cdOffsetInEntry: number,
+    lfhOffset: number | null,
+    value: number,
+    width: 2 | 4 = 4,
+  ) {
+    const v = new DataView(z.buffer, z.byteOffset, z.byteLength);
+    const cd = v.getUint32(eocdOf(v, z.length) + 16, true);
+    const set = (o: number) => (width === 4 ? v.setUint32(o, value, true) : v.setUint16(o, value, true));
+    set(cd + cdOffsetInEntry);
+    if (lfhOffset !== null) set(lfhOffset);
+    return z;
+  }
+
+  test("an entry that lies about its size is rejected quickly, not truncated", () => {
+    const z = zipSync({ "big.txt": new Uint8Array(64 * 1024 * 1024) }, { level: 9 });
+    forge(z, 24, 22, 100);
+    const t0 = performance.now();
+    expect(() => extractZip(z)).toThrow(/expands beyond its declared size/);
+    // Inflation stops at the declared 100 bytes instead of decompressing all 64 MB.
+    expect(performance.now() - t0).toBeLessThan(2000);
+  });
+
+  test("an entry shorter than declared is rejected", () => {
+    const z = zipSync({ "a.txt": enc.encode("hello world") }, { level: 9 });
+    forge(z, 24, 22, 50);
+    expect(() => extractZip(z)).toThrow(/shorter than declared/);
+  });
+
+  test("tampered content fails the CRC-32 check", () => {
+    const z = zipSync({ "a.txt": enc.encode("hello world") }, { level: 0 });
+    const idx = new TextDecoder().decode(z).indexOf("hello");
+    expect(idx).toBeGreaterThan(0);
+    z[idx] = "j".charCodeAt(0);
+    expect(() => extractZip(z)).toThrow(/CRC-32/);
+  });
+
+  test("encrypted entries and unknown compression methods are refused", () => {
+    expect(() => extractZip(forge(zipSync({ "a.txt": enc.encode("x") }), 8, 6, 1, 2))).toThrow(/encrypted/);
+    expect(() => extractZip(forge(zipSync({ "a.txt": enc.encode("x") }), 10, 8, 12, 2))).toThrow(
+      /compression method 12/,
+    );
+  });
+
+  test("stored (uncompressed) and empty entries extract correctly", () => {
+    const z = zipSync({ "a.txt": enc.encode("stored"), "empty.txt": new Uint8Array(0) }, { level: 0 });
+    const r = extractZip(z);
+    expect(new TextDecoder().decode(r.files.get("a.txt"))).toBe("stored");
+    expect(r.files.get("empty.txt")!.length).toBe(0);
+    const zd = zipSync({ "empty.txt": new Uint8Array(0) }, { level: 9 });
+    expect(extractZip(zd).files.get("empty.txt")!.length).toBe(0);
+  });
+});

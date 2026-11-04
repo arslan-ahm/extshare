@@ -76,6 +76,13 @@ function projectId(ctx: CliContext, flag: string | undefined): string {
     throw new CliError(
       "No project selected. Run extshare init --project <id> in your extension folder, or pass --project.",
     );
+  const loggedInTo = readCredentials(ctx)?.server;
+  if (loggedInTo && loggedInTo !== pc.server) {
+    throw new CliError(
+      `extshare.json points at ${pc.server} but you are logged in to ${loggedInTo}. Run: extshare login --server ${pc.server}`,
+      2,
+    );
+  }
   return pc.projectId;
 }
 

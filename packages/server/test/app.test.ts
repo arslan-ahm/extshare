@@ -693,7 +693,15 @@ describe("dashboard security", () => {
       role: "owner",
       workspaceName: "w",
     });
-    for (const next of ["//evil.test/x", "https://evil.test", "/\\evil.test"]) {
+    for (const next of [
+      "//evil.test/x",
+      "https://evil.test",
+      "/\\evil.test",
+      "/\t/evil.test",
+      "/\n/evil.test",
+      "/\r\n/evil.test",
+      "/a\\..\\..\\/evil",
+    ]) {
       const r = await req(env, `/login?next=${encodeURIComponent(next)}`, {
         method: "POST",
         headers: ORIGIN,
@@ -812,5 +820,79 @@ describe("gateway sign-in hardening", () => {
     const path = new URL(invite!.url).pathname;
     expect(await (await req(env, path)).text()).toContain("not configured");
     expect((await req(env, `${path}/signin`)).status).toBe(503);
+  });
+});
+
+describe("adversarial-review regressions", () => {
+  test("kill switch aimed at an older release is refused before anything changes", async () => {
+    const { env, token } = await setup();
+    const projectId = await createProject(env, token);
+    const a = (await (
+      await publish(env, token, projectId, fixturePackage("1.0"))
+    ).json()) as PublishResultDto;
+    const b = (await (
+      await publish(env, token, projectId, fixturePackage("1.1"))
+    ).json()) as PublishResultDto;
+    env.cws.calls = [];
+    const r = await req(env, `/api/releases/${a.release.id}/revoke`, {
+      method: "POST",
+      headers: bearer(token),
+      body: JSON.stringify({ killSwitch: true }),
+    });
+    expect(r.status).toBe(409);
+    expect((await r.json()).error.code).toBe("not_latest");
+    expect(env.store.getRelease(a.release.id)!.state).not.toBe("revoked");
+    expect(env.cws.calls).toEqual([]);
+    // Without the kill switch the older release can still be revoked; with it, the newest can.
+    expect(
+      (
+        await req(env, `/api/releases/${a.release.id}/revoke`, {
+          method: "POST",
+          headers: bearer(token),
+          body: "{}",
+        })
+      ).status,
+    ).toBe(200);
+    const killed = await req(env, `/api/releases/${b.release.id}/revoke`, {
+      method: "POST",
+      headers: bearer(token),
+      body: JSON.stringify({ killSwitch: true }),
+    });
+    expect((await killed.json()).withdrawal.version).toBe("1.1.0.1");
+  });
+
+  test("two concurrent publishes cannot both pass the in-progress check", async () => {
+    const { env, token } = await setup();
+    const projectId = await createProject(env, token);
+    const actor = env.auth.authenticateBearer(token, null);
+    // Hold the Web Store upload open so the first release stays "uploading".
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const realUpload = env.cws.upload.bind(env.cws);
+    env.cws.upload = async (itemId, zip) => {
+      await gate;
+      return realUpload(itemId, zip);
+    };
+    const meta = { ttl: "1d", testers: ["t@x.com"] };
+    const first = env.releases.publish(actor, projectId, fixturePackage("1.0"), meta);
+    const second = env.releases.publish(actor, projectId, fixturePackage("1.1"), meta).then(
+      () => "ok",
+      (e: { code?: string }) => e.code,
+    );
+    expect(await second).toBe("publish_in_progress");
+    release();
+    expect((await first).release.state).toBe("in_review");
+    expect(env.store.listReleases(projectId)).toHaveLength(1);
+  });
+
+  test("unknown invite tokens do not write audit rows", async () => {
+    const { env, token } = await setup();
+    const ws = env.auth.authenticateBearer(token, null).workspaceId;
+    const before = env.store.listAudit({ workspaceId: ws, limit: 1000 }).length;
+    for (let i = 0; i < 5; i++) expect((await req(env, `/r/${"B".repeat(43)}${i}`)).status).toBe(404);
+    expect(env.store.listAudit({ workspaceId: ws, limit: 1000 }).length).toBe(before);
+    expect(env.logs.filter((l) => l.msg === "gateway visit with unknown token")).toHaveLength(5);
   });
 });

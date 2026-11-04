@@ -25,7 +25,10 @@ export function cookieName(deps: Deps, base: string): string {
 
 /** Only same-site relative paths are accepted as post-login redirects. */
 export function safeNext(next: string | undefined | null, fallback = "/"): string {
-  if (!next?.startsWith("/") || next.startsWith("//") || next.startsWith("/\\")) return fallback;
+  // Browsers drop tab/CR/LF inside URLs and treat "\" as "/", so "/\t/evil.test" would become "//evil.test".
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: matching control characters is the point
+  if (!next?.startsWith("/") || /[\u0000-\u001f\u007f\\]/.test(next) || next.startsWith("//"))
+    return fallback;
   return next;
 }
 

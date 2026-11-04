@@ -5,7 +5,6 @@ import {
   compareVersions,
   decideAccess,
   ExtendSchema,
-  type Finding,
   InviteCreateSchema,
   type InviteDto,
   inspectPackage,
@@ -147,24 +146,7 @@ export class ReleaseService {
     }
     const version = report.manifest.version;
 
-    const existing = store.listReleases(project.id);
-    const busy = existing.find((r) => r.state === "uploading" && now() - r.updatedAt < STALE_UPLOAD_MS);
-    if (busy)
-      throw new AppError(
-        409,
-        "publish_in_progress",
-        `Release ${busy.id} is still uploading to the Web Store`,
-      );
-    const highest = existing
-      .filter((r) => r.uploadedToStore)
-      .sort((a, b) => compareVersions(b.version, a.version))[0];
-    if (highest && compareVersions(version, highest.version) <= 0) {
-      throw new AppError(
-        409,
-        "version_not_bumped",
-        `manifest version ${version} must be higher than ${highest.version}, the last version uploaded to this Web Store item`,
-      );
-    }
+    const existing = this.assertPublishable(project.id, version);
 
     const testers = new Set(meta.testers.map(normalizeEmail));
     if (meta.inheritTesters) {
@@ -206,6 +188,9 @@ export class ReleaseService {
     };
     let invite: InviteDto | null = null;
     store.transaction(() => {
+      // Re-checked here because another publish may have started during the artifact write above;
+      // this check and the insert run without yielding, so two publishes cannot both pass.
+      this.assertPublishable(project.id, version);
       store.createRelease(release);
       store.addTesters(
         [...testers].map((email) => ({ releaseId: release.id, email, addedBy: actor.email, addedAt: t })),
@@ -230,6 +215,31 @@ export class ReleaseService {
 
     await this.pushToStore(release, project, bytes);
     return { release: store.getRelease(release.id)!, invite };
+  }
+
+  /** Refuses a publish while another is uploading, or when the version is not above the item's last uploaded one. */
+  private assertPublishable(projectId: string, version: string): Release[] {
+    const { store, now } = this.deps;
+    const existing = store.listReleases(projectId);
+    const busy = existing.find((r) => r.state === "uploading" && now() - r.updatedAt < STALE_UPLOAD_MS);
+    if (busy) {
+      throw new AppError(
+        409,
+        "publish_in_progress",
+        `Release ${busy.id} is still uploading to the Web Store`,
+      );
+    }
+    const highest = existing
+      .filter((r) => r.uploadedToStore)
+      .sort((a, b) => compareVersions(b.version, a.version))[0];
+    if (highest && compareVersions(version, highest.version) <= 0) {
+      throw new AppError(
+        409,
+        "version_not_bumped",
+        `manifest version ${version} must be higher than ${highest.version}, the last version uploaded to this Web Store item`,
+      );
+    }
+    return existing;
   }
 
   /** Uploads and submits a stored release. Every failure is recorded on the release rather than thrown. */
@@ -423,6 +433,20 @@ export class ReleaseService {
     if (release.kind === "withdrawal")
       throw new AppError(400, "invalid_target", "A withdrawal build cannot be revoked");
 
+    const latest = store
+      .listReleases(project.id)
+      .filter((r) => r.uploadedToStore)
+      .sort((a, b) => compareVersions(b.version, a.version))[0];
+    // The withdrawal build replaces whatever the item currently serves to everyone. Aimed at an older
+    // release it would wipe out the newer build, so it is refused before anything changes.
+    if (opts.killSwitch && latest && latest.id !== release.id) {
+      throw new AppError(
+        409,
+        "not_latest",
+        `The kill switch replaces the newest build on this item (${latest.version}), not ${release.version}. Revoke ${release.version} without it, or revoke ${latest.version} with it.`,
+      );
+    }
+
     const wasState = release.state;
     store.transaction(() => {
       store.updateRelease(release.id, {
@@ -448,10 +472,6 @@ export class ReleaseService {
       });
     });
 
-    const latest = store
-      .listReleases(project.id)
-      .filter((r) => r.uploadedToStore)
-      .sort((a, b) => compareVersions(b.version, a.version))[0];
     if (
       opts.cancelSubmission &&
       ["processing", "in_review", "staged"].includes(wasState) &&
@@ -642,7 +662,7 @@ export class ReleaseService {
 
   // ---- gateway ----
 
-  /** Evaluates an invite link visit. Every evaluation is written to the audit log. */
+  /** Evaluates an invite link visit. Every decision on a real invite is written to the audit log. */
   evaluateInvite(
     token: string,
     testerEmail: string | null,
@@ -663,12 +683,15 @@ export class ReleaseService {
       testers,
       email: testerEmail,
     });
-    if (decision.kind !== "signin") {
+    if (!release || !project) {
+      // Unknown tokens are not tied to any workspace; logging them keeps anonymous traffic out of the audit table.
+      this.deps.log("info", "gateway visit with unknown token", { ip });
+    } else if (decision.kind !== "signin") {
       audit(this.deps, {
-        workspaceId: release?.workspaceId ?? null,
+        workspaceId: release.workspaceId,
         actor: testerEmail ?? "anonymous",
         action: `gateway.${decision.kind}`,
-        target: release?.id ?? "unknown",
+        target: release.id,
         ip,
         details: {
           inviteId: invite?.id ?? null,
@@ -677,9 +700,5 @@ export class ReleaseService {
       });
     }
     return { decision, release, project };
-  }
-
-  findingsOf(release: Release): Finding[] {
-    return release.findings;
   }
 }

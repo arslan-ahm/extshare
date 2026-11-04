@@ -1,4 +1,5 @@
-import { unzipSync, zipSync } from "fflate";
+import { Inflate, zipSync } from "fflate";
+import { crc32 } from "./crc32";
 
 /** Hard limits applied to every uploaded package, on the CLI and again on the server. */
 export const ZIP_LIMITS = {
@@ -10,6 +11,12 @@ export const ZIP_LIMITS = {
 
 export interface ZipEntryInfo {
   name: string;
+  /** 0 = stored, 8 = deflate; anything else is refused. */
+  method: number;
+  /** General-purpose bit flags; bit 0 means encrypted. */
+  flags: number;
+  crc32: number;
+  localHeaderOffset: number;
   compressedSize: number;
   uncompressedSize: number;
   isDirectory: boolean;
@@ -70,6 +77,10 @@ export function listZipEntries(bytes: Uint8Array): ZipEntryInfo[] {
     if (p + 46 > bytes.length || view.getUint32(p, true) !== CDH_SIG)
       throw new ZipError("Corrupt central directory entry", "corrupt");
     const madeBy = view.getUint16(p + 4, true) >> 8;
+    const flags = view.getUint16(p + 8, true);
+    const method = view.getUint16(p + 10, true);
+    const crc = view.getUint32(p + 16, true);
+    const localHeaderOffset = view.getUint32(p + 42, true);
     const compressedSize = view.getUint32(p + 20, true);
     const uncompressedSize = view.getUint32(p + 24, true);
     const nameLen = view.getUint16(p + 28, true);
@@ -85,6 +96,10 @@ export function listZipEntries(bytes: Uint8Array): ZipEntryInfo[] {
     const unixMode = madeBy === 3 ? externalAttrs >>> 16 : 0;
     entries.push({
       name,
+      method,
+      flags,
+      crc32: crc,
+      localHeaderOffset,
       compressedSize,
       uncompressedSize,
       isDirectory: name.endsWith("/"),
@@ -143,24 +158,73 @@ export function extractZip(bytes: Uint8Array): ExtractedPackage {
     );
   }
 
-  let raw: Record<string, Uint8Array>;
-  try {
-    raw = unzipSync(bytes);
-  } catch (err) {
-    throw new ZipError(`ZIP could not be decompressed: ${(err as Error).message}`, "corrupt");
-  }
   const files = new Map<string, Uint8Array>();
   let actual = 0;
-  for (const [name, data] of Object.entries(raw)) {
-    if (name.endsWith("/")) continue;
-    if (!seen.has(name.toLowerCase()))
-      throw new ZipError(`Entry "${name}" is not in the central directory`, "corrupt");
+  for (const e of entries) {
+    if (e.isDirectory) continue;
+    const data = inflateEntry(bytes, e);
     actual += data.length;
-    if (actual > ZIP_LIMITS.maxUncompressedBytes)
-      throw new ZipError("Package expands beyond the size limit", "too_large");
-    files.set(name, data);
+    files.set(e.name, data);
   }
   return { files, entries, totalUncompressed: actual };
+}
+
+const LFH_SIG = 0x04034b50;
+// Deflate can expand ~1032:1, so small input chunks bound how far past the declared size one push can go.
+const INFLATE_CHUNK = 1024;
+
+/**
+ * Decompresses one entry, trusting nothing but the central directory: output is capped at the
+ * declared size (inflation aborts the moment it is exceeded, so a header that lies about size
+ * cannot cost more than that much work), the result must be exactly that size, and its CRC-32
+ * must match. Encrypted entries and methods other than stored/deflate are refused.
+ */
+function inflateEntry(bytes: Uint8Array, e: ZipEntryInfo): Uint8Array {
+  if (e.flags & 1) throw new ZipError(`Entry "${e.name}" is encrypted`, "encrypted");
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const lfh = e.localHeaderOffset;
+  if (lfh + 30 > bytes.length || view.getUint32(lfh, true) !== LFH_SIG) {
+    throw new ZipError(`Entry "${e.name}" has no valid local header`, "corrupt");
+  }
+  const start = lfh + 30 + view.getUint16(lfh + 26, true) + view.getUint16(lfh + 28, true);
+  const end = start + e.compressedSize;
+  if (end > bytes.length) throw new ZipError(`Entry "${e.name}" runs past the end of the archive`, "corrupt");
+  const src = bytes.subarray(start, end);
+
+  let out: Uint8Array;
+  if (e.method === 0) {
+    if (e.compressedSize !== e.uncompressedSize)
+      throw new ZipError(`Stored entry "${e.name}" has inconsistent sizes`, "corrupt");
+    out = src.slice();
+  } else if (e.method === 8) {
+    out = new Uint8Array(e.uncompressedSize);
+    let written = 0;
+    const inflater = new Inflate((chunk) => {
+      if (written + chunk.length > e.uncompressedSize) {
+        throw new ZipError(`Entry "${e.name}" expands beyond its declared size`, "zip_bomb");
+      }
+      out.set(chunk, written);
+      written += chunk.length;
+    });
+    try {
+      for (let off = 0; off < src.length; off += INFLATE_CHUNK) {
+        inflater.push(src.subarray(off, off + INFLATE_CHUNK), off + INFLATE_CHUNK >= src.length);
+      }
+      if (src.length === 0) inflater.push(new Uint8Array(0), true);
+    } catch (err) {
+      if (err instanceof ZipError) throw err;
+      throw new ZipError(`Entry "${e.name}" could not be decompressed: ${(err as Error).message}`, "corrupt");
+    }
+    if (written !== e.uncompressedSize)
+      throw new ZipError(`Entry "${e.name}" is shorter than declared`, "corrupt");
+  } else {
+    throw new ZipError(
+      `Entry "${e.name}" uses unsupported compression method ${e.method}`,
+      "unsupported_method",
+    );
+  }
+  if (crc32(out) !== e.crc32) throw new ZipError(`Entry "${e.name}" failed its CRC-32 check`, "crc_mismatch");
+  return out;
 }
 
 /** Deterministic ZIP builder (sorted entries, fixed mtime) so identical input gives an identical hash. */

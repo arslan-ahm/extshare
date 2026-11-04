@@ -330,3 +330,17 @@ describe("packPath", () => {
     expect(() => packPath(join(d, "dist"))).toThrow(/symlink/);
   });
 });
+
+describe("project config safety", () => {
+  test("refuses to act when extshare.json names a different server than the login", async () => {
+    const cwd = mk("extshare-cwd-");
+    const c = cli(cwd, mk("extshare-cfg-"));
+    expect(await c.run("login", "--server", base)).toBe(0);
+    writeFileSync(
+      join(cwd, "extshare.json"),
+      JSON.stringify({ server: "https://other.example", projectId: "prj_x" }),
+    );
+    expect(await c.run("releases")).toBe(2);
+    expect(c.errText()).toContain("extshare login --server https://other.example");
+  });
+});
