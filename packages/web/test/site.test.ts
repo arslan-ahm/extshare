@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:f
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { HELP } from "@extshare/cli/src/main";
-import { build, loadDocs, renderDoc } from "../src/build";
+import { build, FONT_FILES, loadDocs, renderDoc } from "../src/build";
 import { createPreview } from "../src/preview";
 
 const ROOT = join(import.meta.dir, "../../..");
@@ -36,6 +36,7 @@ describe("site build", () => {
       "index.html",
       "404.html",
       "assets/site.css",
+      ...FONT_FILES.map((f) => `assets/fonts/${f}`),
       "favicon.svg",
       "robots.txt",
       "sitemap.xml",
@@ -162,6 +163,20 @@ describe("preview server mirrors Vercel", () => {
     expect(h.get("content-security-policy")).toContain("default-src 'none'");
     expect(h.get("content-type")).toContain("text/html");
     expect(get("/assets/site.css").headers.get("cache-control")).toBe("public, max-age=3600");
+    expect(h.get("content-security-policy")).toContain("font-src 'self'");
+    const font = get("/assets/fonts/Geist-Variable.woff2");
+    expect(font.status).toBe(200);
+    expect(font.headers.get("content-type")).toContain("font/woff2");
+  });
+
+  test("every url() in the stylesheet and every preload points at a built file", () => {
+    const css = html("assets/site.css");
+    const refs = [
+      ...css.matchAll(/url\("([^"]+)"\)/g),
+      ...html("index.html").matchAll(/rel="preload" href="([^"]+)"/g),
+    ].map((m) => m[1]!);
+    expect(refs.length).toBeGreaterThanOrEqual(3);
+    for (const r of refs) expect(get(r).status).toBe(200);
   });
 });
 

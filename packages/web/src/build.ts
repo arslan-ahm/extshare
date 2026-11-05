@@ -12,6 +12,9 @@ import CSS from "./site.css" with { type: "text" };
 
 const ROOT = join(import.meta.dir, "../../..");
 const CONTENT = join(import.meta.dir, "../content/docs");
+/** Self-hosted Geist fonts (SIL OFL); the licence ships next to them. */
+const FONTS = join(import.meta.dir, "fonts");
+export const FONT_FILES = ["Geist-Variable.woff2", "GeistMono-Variable.woff2", "OFL.txt"];
 export const DEFAULT_OUT = join(ROOT, "dist/web");
 
 export interface Doc {
@@ -159,7 +162,7 @@ export function build(outDir = DEFAULT_OUT, siteUrl = process.env.SITE_URL ?? ve
   const docs = loadDocs();
   rmSync(outDir, { recursive: true, force: true });
   const files: string[] = [];
-  const write = (rel: string, content: string) => {
+  const write = (rel: string, content: string | Uint8Array) => {
     const full = join(outDir, rel);
     mkdirSync(dirname(full), { recursive: true });
     writeFileSync(full, content);
@@ -168,9 +171,10 @@ export function build(outDir = DEFAULT_OUT, siteUrl = process.env.SITE_URL ?? ve
   const pages: Page[] = [landingPage(docs), ...docs.map((d) => docPage(d, docs)), notFoundPage()];
   for (const p of pages) write(p.path, page(p));
   write("assets/site.css", CSS);
+  for (const f of FONT_FILES) write(`assets/fonts/${f}`, readFileSync(join(FONTS, f)));
   write(
     "favicon.svg",
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#0b6e66"/><path d="M10 9h12v3H13.5v2.5H21v3h-7.5V20H22v3H10z" fill="#fff"/></svg>\n',
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="#2c4ecc"/><rect x="9" y="9" width="14" height="14" rx="3" fill="#fff"/></svg>\n',
   );
   const robots = siteUrl
     ? `User-agent: *\nAllow: /\nSitemap: ${siteUrl}/sitemap.xml\n`

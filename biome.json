@@ -5,7 +5,7 @@
   "linter": {
     "rules": {
       "preset": "recommended",
-      "style": { "noNonNullAssertion": "off" },
+      "style": { "noNonNullAssertion": "off", "noDescendingSpecificity": "off" },
       "a11y": { "noSvgWithoutTitle": "off" }
     }
   },
