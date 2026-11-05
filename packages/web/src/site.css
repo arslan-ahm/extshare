@@ -286,7 +286,9 @@ main {
     0 24px 48px -28px color-mix(in srgb, var(--term-bg) 45%, transparent);
 }
 .terminal .prompt,
-.terminal .dim {
+.terminal .dim,
+.selfhost .prompt,
+.selfhost .dim {
   color: var(--term-dim);
 }
 .terminal .hl {

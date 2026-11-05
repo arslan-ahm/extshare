@@ -2,7 +2,8 @@
  * Static site generator for the extshare website: landing page + docs.
  * `bun run build:web` writes dist/web, which Vercel serves (see vercel.json).
  */
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { HELP } from "@extshare/cli/src/main";
 import { Marked, type Tokens } from "marked";
@@ -19,6 +20,79 @@ export const FONT_FILES = ["Geist-Variable.woff2", "GeistMono-Variable.woff2", "
 const STATIC = join(import.meta.dir, "../static");
 export const STATIC_FILES = ["install.sh", "install.ps1"];
 export const DEFAULT_OUT = join(ROOT, "dist/web");
+/** Where the installers download from; tests and previews pass their own site URL. */
+export const PRODUCTION_URL = "https://extshare.vercel.app";
+
+/**
+ * The installable tools, published with every deploy under /download:
+ *   extshare.js         the CLI, bundled into one file for the Bun runtime
+ *   extshare-server.js  the server (and `admin` subcommand), likewise
+ *   SHA256SUMS          checksums the installers verify before installing
+ *   VERSION             the release version (packages/cli and packages/server must agree)
+ *   Dockerfile          builds a server image from the published bundle, pinned by checksum
+ */
+export const BUNDLES = {
+  "extshare.js": "packages/cli/src/main.ts",
+  "extshare-server.js": "packages/server/src/bin.ts",
+} as const;
+export const DOWNLOAD_FILES = [...Object.keys(BUNDLES), "SHA256SUMS", "VERSION", "Dockerfile"];
+
+export function releaseVersion(): string {
+  const read = (p: string) => JSON.parse(readFileSync(join(ROOT, p), "utf8")).version as string;
+  const cli = read("packages/cli/package.json");
+  const server = read("packages/server/package.json");
+  if (cli !== server) throw new Error(`Version mismatch: cli ${cli}, server ${server}`);
+  return cli;
+}
+
+function bundle(entry: string): Uint8Array<ArrayBuffer> {
+  const dir = mkdtempSync(join(tmpdir(), "extshare-bundle-"));
+  try {
+    const r = Bun.spawnSync(
+      [process.execPath, "build", join(ROOT, entry), "--target", "bun", "--minify", "--outdir", dir],
+      {
+        cwd: ROOT,
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    if (r.exitCode !== 0) throw new Error(`bundling ${entry} failed:\n${r.stderr.toString()}`);
+    const [out] = readdirSync(dir).filter((f) => f.endsWith(".js"));
+    if (!out || readdirSync(dir).length !== 1)
+      throw new Error(`bundling ${entry} did not produce exactly one file`);
+    return new Uint8Array(readFileSync(join(dir, out)));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+export function buildDownloads(siteUrl: string): [string, string | Uint8Array<ArrayBuffer>][] {
+  const version = releaseVersion();
+  const files: [string, Uint8Array<ArrayBuffer>][] = Object.entries(BUNDLES).map(([name, entry]) => [
+    name,
+    bundle(entry),
+  ]);
+  const sha = (b: Uint8Array) => new Bun.CryptoHasher("sha256").update(b).digest("hex");
+  const sums = files.map(([name, b]) => `${sha(b)}  ${name}\n`).join("");
+  const server = files.find(([n]) => n === "extshare-server.js")![1];
+  const dockerfile = `# syntax=docker/dockerfile:1.7
+# extshare server ${version}, built from the published bundle (checksum pinned).
+#   docker build -t extshare ${siteUrl}/download/Dockerfile
+FROM oven/bun:1.3-slim
+WORKDIR /app
+ADD --checksum=sha256:${sha(server)} ${siteUrl}/download/extshare-server.js /app/extshare-server.js
+ENV DATA_DIR=/data HOST=0.0.0.0 PORT=8787
+RUN mkdir -p /data && chown bun:bun /data && chmod 644 /app/extshare-server.js \\
+ && printf '#!/bin/sh\\nexec bun /app/extshare-server.js "$@"\\n' > /usr/local/bin/extshare-server \\
+ && chmod 755 /usr/local/bin/extshare-server
+USER bun
+VOLUME ["/data"]
+EXPOSE 8787
+HEALTHCHECK --interval=30s --timeout=3s CMD bun -e "fetch('http://127.0.0.1:8787/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+ENTRYPOINT ["extshare-server"]
+`;
+  return [...files, ["SHA256SUMS", sums], ["VERSION", `${version}\n`], ["Dockerfile", dockerfile]];
+}
 
 export interface Doc {
   slug: string;
@@ -176,6 +250,7 @@ export function build(outDir = DEFAULT_OUT, siteUrl = process.env.SITE_URL ?? ve
   write("assets/site.css", CSS);
   for (const f of FONT_FILES) write(`assets/fonts/${f}`, readFileSync(join(FONTS, f)));
   for (const f of STATIC_FILES) write(f, readFileSync(join(STATIC, f)));
+  for (const [rel, content] of buildDownloads(siteUrl ?? PRODUCTION_URL)) write(`download/${rel}`, content);
   write(
     "favicon.svg",
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="#2c4ecc"/><rect x="9" y="9" width="14" height="14" rx="3" fill="#fff"/></svg>\n',

@@ -1,41 +1,47 @@
 ---
 title: Getting started
 order: 2
-description: Run the extshare server, create your account, install the CLI, and publish your first test build.
+description: Install the extshare server and CLI, create your account, and publish your first test build.
 ---
 
 # Getting started
 
-You need a server with Docker, a persistent disk and HTTPS, a Chrome Web Store developer account, and a Google Cloud project.
+You need a server with a persistent disk and HTTPS (macOS or Linux, or Docker), a Chrome Web Store developer account, and a Google Cloud project. Everything else is installed for you.
 
 ## 1. Prepare the Chrome Web Store item
 
 Create the extension's item once in the [Developer Dashboard](https://chrome.google.com/webstore/devconsole/), fill in the **Store listing** and **Privacy** tabs, and choose its visibility (Private or Unlisted). Note the 32-letter item ID. Then create publishing credentials. Both steps are covered in [Chrome Web Store setup](/docs/web-store).
 
-## 2. Run the server
+## 2. Install and start the server
 
-Create a `.env` file with your settings. [Server configuration](/docs/server) lists every variable, and the repository has a commented [.env.example](https://github.com/arslan-ahm/extshare/blob/main/.env.example) to start from. Then start the published image:
+On your server:
 
 ```bash
-docker run -d --name extshare --restart unless-stopped \
-  --env-file .env -v extshare-data:/data \
-  -p 127.0.0.1:8787:8787 ghcr.io/arslan-ahm/extshare:latest
+curl -fsSL https://extshare.vercel.app/install.sh | sh -s -- server
 ```
 
-If a setting is missing, the container stops and `docker logs extshare` lists what to fix. Put the server behind HTTPS; [Server configuration](/docs/server#https-and-reverse-proxy) has a ready Caddy config.
+This installs the `extshare-server` command. It runs on [Bun](https://bun.sh), which the installer sets up first if it is missing. Then create a folder for the server, put a `.env` file with your settings in it ([Server configuration](/docs/server) lists every variable, and the repository has a commented [.env.example](https://github.com/arslan-ahm/extshare/blob/main/.env.example) to start from), and start it there:
+
+```bash
+mkdir -p ~/extshare && cd ~/extshare     # your .env goes here
+extshare-server
+```
+
+If a setting is missing, it stops and lists what to fix. To keep it running and put it behind HTTPS, see [Server configuration](/docs/server#keep-it-running), which also covers [Docker](/docs/server#docker).
 
 ## 3. Create your account
 
+From the same folder:
+
 ```bash
-docker exec -it extshare bun admin.js create-user \
-  --email you@example.com --name "You" --workspace-name "My Team" --role owner
+extshare-server admin create-user --email you@example.com --name "You" --workspace-name "My Team" --role owner
 ```
 
 Open your server's URL and sign in. The first sign-in asks you to scan a QR code with an authenticator app; every dashboard account uses two-factor authentication.
 
 ## 4. Install the CLI
 
-macOS and Linux:
+On your own computer. macOS and Linux:
 
 ```bash
 curl -fsSL https://extshare.vercel.app/install.sh | sh
@@ -47,7 +53,7 @@ Windows (PowerShell):
 irm https://extshare.vercel.app/install.ps1 | iex
 ```
 
-The installer downloads the binary for your system from the [latest release](https://github.com/arslan-ahm/extshare/releases/latest), checks it against the release's SHA-256 checksums, and puts it on your `PATH`. Check it with `extshare --version`. The [CLI reference](/docs/cli#install) covers other versions and install locations.
+The installer checks the download against its SHA-256 checksum, installs the `extshare` command, and tells you if it needs adding to your `PATH`. Check it with `extshare --version`. The [CLI reference](/docs/cli#install) has the details.
 
 ## 5. Publish your first build
 

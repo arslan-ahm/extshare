@@ -28,7 +28,7 @@ extshare revoke          --->  links dead, submission cancelled,
 
 ## Install
 
-**CLI** (single binary, no dependencies):
+**CLI** (`extshare`):
 
 ```bash
 curl -fsSL https://extshare.vercel.app/install.sh | sh      # macOS and Linux
@@ -38,13 +38,13 @@ curl -fsSL https://extshare.vercel.app/install.sh | sh      # macOS and Linux
 irm https://extshare.vercel.app/install.ps1 | iex           # Windows (PowerShell)
 ```
 
-The installers download the binary for your system from [GitHub Releases](https://github.com/arslan-ahm/extshare/releases) and verify it against the release's `SHA256SUMS` before installing. Set `EXTSHARE_VERSION=v0.1.0` to pin a version.
-
-**Server** (container image for linux/amd64 and linux/arm64):
+**Server** (`extshare-server`, on macOS or Linux):
 
 ```bash
-docker pull ghcr.io/arslan-ahm/extshare:latest
+curl -fsSL https://extshare.vercel.app/install.sh | sh -s -- server
 ```
+
+Both run on [Bun](https://bun.sh) 1.3+, which the installers set up if it is missing. They download the tools from the website's `/download` folder and refuse anything that does not match its `SHA256SUMS`. Docker users can build the server image straight from the published Dockerfile: `docker build -t extshare https://extshare.vercel.app/download/Dockerfile`.
 
 ## Server setup
 
@@ -63,21 +63,29 @@ Create a second OAuth client (Web application) with redirect URI `https://<your 
 
 ### 3. Configure and run
 
-Start from `.env.example` (SECRET: `openssl rand -base64 48`). Leave `HOST` and `DATA_DIR` unset for Docker; the image listens on `0.0.0.0:8787` and stores data in the `/data` volume.
+Put a `.env` in a folder of its own, starting from `.env.example` (SECRET: `openssl rand -base64 48`), and start the server there:
 
 ```bash
-docker run -d --name extshare --restart unless-stopped   --env-file .env -v extshare-data:/data   -p 127.0.0.1:8787:8787 ghcr.io/arslan-ahm/extshare:latest
+cd ~/extshare && extshare-server
 ```
 
-Run it behind HTTPS. `deploy/Caddyfile` is a ready reverse-proxy config; set `TRUST_PROXY=true` behind it.
+Or with Docker (leave `HOST` and `DATA_DIR` unset; the image listens on `0.0.0.0:8787` and stores data in the `/data` volume):
+
+```bash
+docker build -t extshare https://extshare.vercel.app/download/Dockerfile
+docker run -d --name extshare --restart unless-stopped --env-file .env -v extshare-data:/data -p 127.0.0.1:8787:8787 extshare
+```
+
+Run it behind HTTPS. `deploy/Caddyfile` is a ready reverse-proxy config; set `TRUST_PROXY=true` behind it. The [server guide](https://extshare.vercel.app/docs/server#keep-it-running) has a systemd unit.
 
 ### 4. Create the first publisher account
 
 ```bash
-docker exec -it extshare bun admin.js create-user --email you@example.com --name "You" --workspace-name "My Team" --role owner
+extshare-server admin create-user --email you@example.com --name "You" --workspace-name "My Team" --role owner
+# Docker: docker exec -it extshare extshare-server admin create-user ...
 ```
 
-Sign in at `PUBLIC_URL`. The first sign-in enrols an authenticator app (TOTP is mandatory for every dashboard account). Add teammates with `--workspace-id <id>` and `--role publisher` or `--role viewer`. Lost authenticator: `docker exec -it extshare bun admin.js reset-mfa --email ...`.
+Sign in at `PUBLIC_URL`. The first sign-in enrols an authenticator app (TOTP is mandatory for every dashboard account). Add teammates with `--workspace-id <id>` and `--role publisher` or `--role viewer`. Lost authenticator: `extshare-server admin reset-mfa --email ...`.
 
 ### 5. Verify the database layer (owner step, from source)
 
@@ -163,10 +171,8 @@ Tests use hand-written fixtures and in-memory fakes for the Web Store and Google
 
 ## Releasing
 
-Set the version in `packages/cli/package.json`, merge to `main`, then push a matching tag:
+Releases are free and need no CI: the website build publishes the tools. `bun run build:web` bundles the CLI (`packages/cli/src/main.ts`) and the server (`packages/server/src/bin.ts`) into `dist/web/download` with `SHA256SUMS`, `VERSION` and a checksum-pinned `Dockerfile`, and Vercel serves them on every production deploy. To release a new version:
 
-```bash
-git tag v0.1.0 && git push origin v0.1.0
-```
-
-`.github/workflows/release.yml` refuses a tag that does not match the version, runs the checks, builds and smoke-tests the CLI for five platforms, publishes them with `SHA256SUMS` as a GitHub Release, pushes the server image to `ghcr.io/arslan-ahm/extshare`, and finally installs the CLI from that release with both installers on Linux, macOS and Windows.
+1. Set the same version in `packages/cli/package.json` and `packages/server/package.json` (the build refuses a mismatch).
+2. Run `bun run check`; it includes end-to-end tests of both installers against the freshly built bundles.
+3. Merge to `main`. Vercel deploys it, and `install.sh` / `install.ps1` serve the new version from then on.

@@ -4,7 +4,7 @@ import { GITHUB_URL, type Page } from "./layout";
 
 // Real output formats, trimmed for space: the installer (static/install.sh) and `extshare publish` (packages/cli/src/commands.ts).
 const PUBLISH = `<span class="prompt">$</span> curl -fsSL https://extshare.vercel.app/install.sh | sh
-<span class="dim">Installed extshare ${VERSION} to /home/you/.extshare/bin/extshare</span>
+<span class="dim">Installed extshare ${VERSION}: /home/you/.extshare/bin/extshare</span>
 
 <span class="prompt">$</span> extshare publish ./dist --ttl 7d \\
     --testers dana@example.com,lee@example.com
@@ -18,10 +18,9 @@ Share link (shown once, valid until 2026-11-12 14:05 UTC):
 <span class="dim">The Web Store is reviewing this version. Testers see
 the install button once it is live.</span>`;
 
-const DOCKER = `docker run -d --name extshare \\
-  --env-file .env -v extshare-data:/data \\
-  -p 127.0.0.1:8787:8787 \\
-  ghcr.io/arslan-ahm/extshare:latest`;
+const SERVER = `<span class="prompt">$</span> curl -fsSL https://extshare.vercel.app/install.sh | sh -s -- server
+<span class="prompt">$</span> cd ~/extshare        <span class="dim"># your .env lives here</span>
+<span class="prompt">$</span> extshare-server`;
 
 export function landingPage(_docs: Doc[]): Page {
   return {
@@ -153,10 +152,10 @@ export function landingPage(_docs: Doc[]): Page {
 <section class="selfhost" aria-labelledby="selfhost-title">
   <div>
     <h2 id="selfhost-title">Runs on your own server</h2>
-    <p>One container with SQLite and a data volume. Your Web Store credentials and your testers' data stay with you.</p>
+    <p>One command with SQLite and a data folder, on any Linux or macOS server, or in Docker. Your Web Store credentials and your testers' data stay with you.</p>
     <a class="btn btn-primary" href="/docs/server">Read the server guide</a>
   </div>
-  <pre aria-label="Docker example"><code>${DOCKER}</code></pre>
+  <pre aria-label="Installing and starting the server"><code>${SERVER}</code></pre>
 </section>
 `,
   };

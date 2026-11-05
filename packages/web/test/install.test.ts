@@ -1,55 +1,52 @@
 /**
- * End-to-end tests for the CLI installers (static/install.sh, static/install.ps1).
- * A real CLI binary is compiled for this machine and served from a local HTTP server laid out like a GitHub
- * Release (binary + SHA256SUMS). Each installer must install a binary that runs, and must refuse, installing
- * nothing, when the checksum is wrong, missing, or the download fails.
+ * End-to-end tests for the installers (static/install.sh, static/install.ps1).
+ * The real CLI and server bundles are built exactly as the website build publishes them and served from a
+ * local HTTP server laid out like /download. Each installer must install launchers that run the tools, and
+ * must refuse, installing nothing, when the checksum is wrong, missing, or the download fails.
  */
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { VERSION } from "@extshare/cli/src/main";
+import { buildDownloads, releaseVersion } from "../src/build";
 
 setDefaultTimeout(120_000);
 
-const ROOT = join(import.meta.dir, "../../..");
 const STATIC = join(import.meta.dir, "../static");
 const isWindows = process.platform === "win32";
-/** The asset name the installers pick for this machine (both map Windows to the x64 build). */
-const asset = isWindows
-  ? "extshare-windows-x64.exe"
-  : `extshare-${process.platform === "darwin" ? "darwin" : "linux"}-${process.arch === "arm64" ? "arm64" : "x64"}`;
-const binName = isWindows ? "extshare.exe" : "extshare";
+const VERSION = releaseVersion();
 
 let work: string;
 let server: ReturnType<typeof Bun.serve>;
-let binary: Uint8Array<ArrayBuffer>;
+let published: Map<string, string | Uint8Array<ArrayBuffer>>;
 
-const sha256 = (b: Uint8Array) => new Bun.CryptoHasher("sha256").update(b).digest("hex");
+const sha256 = (b: Uint8Array | string) => new Bun.CryptoHasher("sha256").update(b).digest("hex");
 
-beforeAll(async () => {
+beforeAll(() => {
   work = mkdtempSync(join(tmpdir(), "extshare-install-"));
-  const out = join(work, asset);
-  const build = Bun.spawnSync(
-    ["bun", "build", join(ROOT, "packages/cli/src/main.ts"), "--compile", "--outfile", out],
-    { cwd: ROOT, stdout: "pipe", stderr: "pipe" },
-  );
-  if (build.exitCode !== 0) throw new Error(`CLI build failed: ${build.stderr.toString()}`);
-  binary = new Uint8Array(readFileSync(out));
-  const good = `${sha256(binary)}  ${asset}\n`;
-  // Each top-level path is one release layout.
-  const releases: Record<string, Record<string, Uint8Array<ArrayBuffer> | string>> = {
-    good: { [asset]: binary, SHA256SUMS: good },
-    badsum: { [asset]: binary, SHA256SUMS: `${"0".repeat(64)}  ${asset}\n` },
-    noentry: { [asset]: binary, SHA256SUMS: `${sha256(binary)}  extshare-plan9-mips\n` },
-    missing: { SHA256SUMS: good },
+  published = new Map(buildDownloads("http://127.0.0.1"));
+  const cli = published.get("extshare.js")!;
+  // Each top-level path is one /download layout.
+  const layouts: Record<string, Record<string, string | Uint8Array<ArrayBuffer>>> = {
+    good: Object.fromEntries(published),
+    badsum: { ...Object.fromEntries(published), SHA256SUMS: `${"0".repeat(64)}  extshare.js\n` },
+    noentry: { ...Object.fromEntries(published), SHA256SUMS: `${sha256(cli)}  something-else.js\n` },
+    missing: { SHA256SUMS: published.get("SHA256SUMS")! },
   };
   server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     fetch(req) {
-      const [, release, file] = new URL(req.url).pathname.split("/");
-      const body = releases[release ?? ""]?.[file ?? ""];
+      const [, layout, file] = new URL(req.url).pathname.split("/");
+      const body = layouts[layout ?? ""]?.[file ?? ""];
       return body === undefined ? new Response("not found", { status: 404 }) : new Response(body);
     },
   });
@@ -63,14 +60,17 @@ afterAll(() => {
 interface Installer {
   name: string;
   available: boolean;
-  command: () => string[];
+  command: (component: string) => string[];
+  /** The command a user runs after installing. */
+  launcher: (home: string, tool: string) => string[];
 }
 
 const installers: Installer[] = [
   {
     name: "install.sh",
     available: Bun.which("sh") !== null,
-    command: () => ["sh", join(STATIC, "install.sh")],
+    command: (c) => ["sh", join(STATIC, "install.sh"), c],
+    launcher: (home, tool) => ["sh", join(home, "bin", tool)],
   },
   {
     name: "install.ps1",
@@ -84,78 +84,146 @@ const installers: Installer[] = [
       "-File",
       join(STATIC, "install.ps1"),
     ],
+    launcher: (home, tool) => ["cmd", "/c", join(home, "bin", `${tool}.cmd`)],
   },
 ];
 
-// Async on purpose: a blocking spawn would stall this process, and with it the release server above.
-async function runInstaller(inst: Installer, release: string) {
-  const dir = join(work, `${inst.name}-${release}`);
-  mkdirSync(dir, { recursive: true });
-  const p = Bun.spawn(inst.command(), {
-    env: {
-      ...process.env,
-      EXTSHARE_DOWNLOAD_BASE: `http://127.0.0.1:${server.port}/${release}`,
-      EXTSHARE_INSTALL_DIR: dir,
-      EXTSHARE_NO_MODIFY_PATH: "1",
-    },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+// Async on purpose: a blocking spawn would stall this process, and with it the download server above.
+async function run(cmd: string[], env: Record<string, string | undefined> = process.env, cwd?: string) {
+  const p = Bun.spawn(cmd, { env, cwd, stdout: "pipe", stderr: "pipe" });
   const [out, err, code] = await Promise.all([
     new Response(p.stdout).text(),
     new Response(p.stderr).text(),
     p.exited,
   ]);
-  return { code, out: out + err, installed: join(dir, binName) };
+  return { code, out: out + err };
 }
 
-test("the served binary is the real CLI and reports the package version", () => {
-  // Precondition for every case below: the fixture really is a runnable CLI.
-  const direct = Bun.spawnSync([join(work, asset), "--version"]);
-  expect(direct.exitCode).toBe(0);
-  expect(direct.stdout.toString().trim()).toBe(`extshare ${VERSION}`);
-  expect(VERSION).toMatch(/^\d+\.\d+\.\d+$/);
+let n = 0;
+async function install(
+  inst: Installer,
+  layout: string,
+  component = "cli",
+  extra: Record<string, string> = {},
+) {
+  const home = join(work, `${inst.name}-${layout}-${component}-${n++}`);
+  mkdirSync(home, { recursive: true });
+  const r = await run(inst.command(component), {
+    ...process.env,
+    EXTSHARE_DOWNLOAD_BASE: `http://127.0.0.1:${server.port}/${layout}`,
+    EXTSHARE_HOME: home,
+    EXTSHARE_COMPONENT: component,
+    EXTSHARE_NO_MODIFY_PATH: "1",
+    EXTSHARE_NO_BUN_INSTALL: "1",
+    ...extra,
+  });
+  return { ...r, home };
+}
+
+test("the published bundles are the real tools", async () => {
+  // Precondition for every case below.
+  for (const [file, name] of [
+    ["extshare.js", "extshare"],
+    ["extshare-server.js", "extshare-server"],
+  ] as const) {
+    const path = join(work, file);
+    writeFileSync(path, published.get(file)!);
+    const r = await run([process.execPath, path, "--version"]);
+    expect(r.out.trim()).toBe(`${name} ${VERSION}`);
+  }
+  expect(published.get("VERSION")).toBe(`${VERSION}\n`);
+  const sums = String(published.get("SHA256SUMS"));
+  expect(sums).toContain(`${sha256(published.get("extshare.js")!)}  extshare.js`);
+  expect(sums).toContain(`${sha256(published.get("extshare-server.js")!)}  extshare-server.js`);
 });
 
 for (const inst of installers) {
   describe.skipIf(!inst.available)(inst.name, () => {
-    test("installs a verified binary that runs", async () => {
-      const r = await runInstaller(inst, "good");
+    test("installs the CLI, and the installed command runs", async () => {
+      const r = await install(inst, "good");
       expect(r.out).toContain(`Installed extshare ${VERSION}`);
       expect(r.code).toBe(0);
-      expect(existsSync(r.installed)).toBe(true);
-      expect(sha256(new Uint8Array(readFileSync(r.installed)))).toBe(sha256(binary));
-      const v = Bun.spawnSync([r.installed, "--version"]);
-      expect(v.stdout.toString().trim()).toBe(`extshare ${VERSION}`);
+      const v = await run([...inst.launcher(r.home, "extshare"), "--version"], process.env, tmpdir());
+      expect(v.out.trim()).toBe(`extshare ${VERSION}`);
+      const help = await run([...inst.launcher(r.home, "extshare"), "--help"], process.env, tmpdir());
+      expect(help.out).toContain("Usage: extshare <command>");
     });
 
-    test("re-running over an existing install replaces it", async () => {
-      const first = await runInstaller(inst, "good");
-      writeFileSync(first.installed, "stale");
-      const again = await runInstaller(inst, "good");
+    test("installs the server, which refuses to start unconfigured and writes nothing", async () => {
+      const r = await install(inst, "good", "server");
+      expect(r.out).toContain(`Installed extshare-server ${VERSION}`);
+      expect(r.code).toBe(0);
+      const v = await run([...inst.launcher(r.home, "extshare-server"), "--version"], process.env, tmpdir());
+      expect(v.out.trim()).toBe(`extshare-server ${VERSION}`);
+      // Start it in an empty folder with no server settings in the environment.
+      const cwd = mkdtempSync(join(work, "srv-"));
+      const env = Object.fromEntries(
+        Object.entries(process.env).filter(([k]) => !/^(PUBLIC_URL|SECRET|CWS_|GOOGLE_|DATA_DIR)/.test(k)),
+      );
+      const start = await run(inst.launcher(r.home, "extshare-server"), env, cwd);
+      expect(start.code).toBe(1);
+      expect(start.out).toContain("PUBLIC_URL");
+      expect(readdirSync(cwd)).toEqual([]);
+      // It reads the .env in the folder it starts from (the docs rely on this): with PUBLIC_URL set there,
+      // only the other settings are reported, and it still writes nothing.
+      writeFileSync(join(cwd, ".env"), "PUBLIC_URL=https://extshare.example.com\nDATA_DIR=./never-created\n");
+      const withEnv = await run(inst.launcher(r.home, "extshare-server"), env, cwd);
+      expect(withEnv.code).toBe(1);
+      expect(withEnv.out).not.toContain("- PUBLIC_URL");
+      expect(withEnv.out).toContain("- SECRET");
+      expect(readdirSync(cwd)).toEqual([".env"]);
+    });
+
+    test("re-running replaces an existing install", async () => {
+      const first = await install(inst, "good");
+      const lib = join(first.home, "lib", "extshare.js");
+      writeFileSync(lib, "stale");
+      const again = await run(inst.command("cli"), {
+        ...process.env,
+        EXTSHARE_DOWNLOAD_BASE: `http://127.0.0.1:${server.port}/good`,
+        EXTSHARE_HOME: first.home,
+        EXTSHARE_COMPONENT: "cli",
+        EXTSHARE_NO_MODIFY_PATH: "1",
+        EXTSHARE_NO_BUN_INSTALL: "1",
+      });
       expect(again.code).toBe(0);
-      expect(sha256(new Uint8Array(readFileSync(again.installed)))).toBe(sha256(binary));
+      expect(sha256(new Uint8Array(readFileSync(lib)))).toBe(sha256(published.get("extshare.js")!));
     });
 
-    test("refuses a binary whose checksum does not match, installing nothing", async () => {
-      const r = await runInstaller(inst, "badsum");
+    test("refuses a file whose checksum does not match, installing nothing", async () => {
+      const r = await install(inst, "badsum");
       expect(r.code).not.toBe(0);
       expect(r.out).toContain("checksum mismatch");
-      expect(existsSync(r.installed)).toBe(false);
+      expect(existsSync(join(r.home, "bin"))).toBe(false);
     });
 
-    test("refuses when SHA256SUMS has no entry for this platform", async () => {
-      const r = await runInstaller(inst, "noentry");
+    test("refuses when SHA256SUMS has no entry for the file", async () => {
+      const r = await install(inst, "noentry");
       expect(r.code).not.toBe(0);
       expect(r.out).toContain("SHA256SUMS has no entry");
-      expect(existsSync(r.installed)).toBe(false);
+      expect(existsSync(join(r.home, "bin"))).toBe(false);
     });
 
     test("reports a failed download", async () => {
-      const r = await runInstaller(inst, "missing");
+      const r = await install(inst, "missing");
       expect(r.code).not.toBe(0);
       expect(r.out).toContain("could not download");
-      expect(existsSync(r.installed)).toBe(false);
+      expect(existsSync(join(r.home, "bin"))).toBe(false);
+    });
+
+    test("rejects an unknown component", async () => {
+      const r = await install(inst, "good", "nope");
+      expect(r.code).not.toBe(0);
+      expect(r.out).toContain("unknown component 'nope'");
+    });
+
+    test("without Bun, and told not to install it, explains what is needed", async () => {
+      const r = await install(inst, "good", "cli", {
+        EXTSHARE_BUN: join(work, isWindows ? "no-bun.exe" : "no-bun"),
+      });
+      expect(r.code).not.toBe(0);
+      expect(r.out).toContain("bun not found");
+      expect(existsSync(join(r.home, "bin"))).toBe(false);
     });
   });
 }

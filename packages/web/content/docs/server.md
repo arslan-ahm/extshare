@@ -1,16 +1,22 @@
 ---
 title: Server configuration
 order: 4
-description: Environment variables, tester sign-in, HTTPS, Docker, accounts, backups and upgrades.
+description: Install the server, its settings, tester sign-in, HTTPS, Docker, accounts, backups and upgrades.
 ---
 
 # Server configuration
 
-The server is a single process, published as a [Docker image](#docker). It keeps a SQLite database and the uploaded packages in `DATA_DIR`, so it needs a persistent disk: a VPS, or a container host with a mounted volume. It also runs a background job that checks the Web Store and closes expired releases.
+The server is one command, `extshare-server`, installed with:
+
+```bash
+curl -fsSL https://extshare.vercel.app/install.sh | sh -s -- server
+```
+
+It runs on [Bun](https://bun.sh) (the installer sets it up if it is missing) on macOS or Linux, or in [Docker](#docker). It keeps a SQLite database and the uploaded packages in `DATA_DIR`, so it needs a persistent disk: a VPS, or a container host with a mounted volume. It also runs a background job that checks the Web Store and closes expired releases.
 
 ## Environment variables
 
-Put your settings in a `.env` file, starting from the commented [.env.example](https://github.com/arslan-ahm/extshare/blob/main/.env.example). Docker reads it through `--env-file`; when you [run from source](#run-from-source), Bun loads it automatically.
+Put your settings in a `.env` file, starting from the commented [.env.example](https://github.com/arslan-ahm/extshare/blob/main/.env.example). `extshare-server` reads the `.env` in the folder you start it from; Docker reads it through `--env-file`.
 
 | Variable                                                  | Required    | Meaning                                                                                                                                   |
 | --------------------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
@@ -51,12 +57,41 @@ extshare.example.com {
 }
 ```
 
-## Docker
+## Keep it running
 
-The server is published as a container image for `linux/amd64` and `linux/arm64`: `ghcr.io/arslan-ahm/extshare`. Use `latest`, or pin a release such as `0.1.0`.
+Run `extshare-server` from the folder that holds your `.env`, under a service manager so it restarts with the machine. A systemd unit, assuming a user `extshare` whose `.env` lives in `/home/extshare/server`:
+
+```ini
+# /etc/systemd/system/extshare.service
+[Unit]
+Description=extshare server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=extshare
+WorkingDirectory=/home/extshare/server
+ExecStart=/home/extshare/.extshare/bin/extshare-server
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
 
 ```bash
-docker run -d --name extshare --restart unless-stopped   --env-file .env -v extshare-data:/data   -p 127.0.0.1:8787:8787 ghcr.io/arslan-ahm/extshare:latest
+sudo systemctl daemon-reload && sudo systemctl enable --now extshare
+journalctl -u extshare -f      # logs, including configuration errors
+```
+
+## Docker
+
+Build an image straight from the published Dockerfile; it downloads the server and checks it against a pinned checksum. No registry account is needed.
+
+```bash
+docker build -t extshare https://extshare.vercel.app/download/Dockerfile
+docker run -d --name extshare --restart unless-stopped \
+  --env-file .env -v extshare-data:/data \
+  -p 127.0.0.1:8787:8787 extshare
 ```
 
 The image listens on `0.0.0.0:8787` inside the container and keeps its data in the `/data` volume, so leave `HOST` and `DATA_DIR` out of the `.env` you pass to it. Publishing the port on `127.0.0.1` keeps it private to the reverse proxy.
@@ -64,7 +99,10 @@ The image listens on `0.0.0.0:8787` inside the container and keeps its data in t
 To use a service account key, mount it read-only and point at it. The container runs as a non-root user, so the file must be readable by others (`chmod 644`); keep it in a directory only you can open.
 
 ```bash
-docker run -d --name extshare --restart unless-stopped   --env-file .env -v extshare-data:/data   -v "$PWD/cws-key.json:/run/secrets/cws-key.json:ro"   -p 127.0.0.1:8787:8787 ghcr.io/arslan-ahm/extshare:latest
+docker run -d --name extshare --restart unless-stopped \
+  --env-file .env -v extshare-data:/data \
+  -v "$PWD/cws-key.json:/run/secrets/cws-key.json:ro" \
+  -p 127.0.0.1:8787:8787 extshare
 # .env: CWS_SERVICE_ACCOUNT_FILE=/run/secrets/cws-key.json
 ```
 
@@ -72,29 +110,40 @@ If the configuration is incomplete the container exits, and `docker logs extshar
 
 ## Accounts
 
+Run these from the folder with your `.env` (with Docker, prefix them with `docker exec -it extshare`):
+
 ```bash
-docker exec -it extshare bun admin.js create-user --email <email> --name <name> --workspace-name <name> --role owner
-docker exec -it extshare bun admin.js create-user --email <email> --name <name> --workspace-id <id> --role publisher
-docker exec -it extshare bun admin.js reset-mfa --email <email>
+extshare-server admin create-user --email <email> --name <name> --workspace-name <name> --role owner
+extshare-server admin create-user --email <email> --name <name> --workspace-id <id> --role publisher
+extshare-server admin reset-mfa --email <email>
 ```
 
 `create-user` asks for the password without echoing it. Roles: **owner** and **publisher** can create projects, publish, change testers, share, extend and revoke. **Viewer** can read everything in the workspace. `reset-mfa` clears a lost authenticator and signs the user out everywhere, including the CLI.
 
 ## Backups and upgrades
 
-Back up the `/data` volume: `extshare.db` (with its `-wal` file) and `artifacts/`. For a consistent copy, stop the container first.
+Back up `DATA_DIR` (the `/data` volume in Docker): `extshare.db` (with its `-wal` file) and `artifacts/`. For a consistent copy, stop the server first.
 
-Database migrations run automatically at start-up and are recorded in the database. To upgrade, pull the new image and recreate the container; the volume keeps your data:
+Database migrations run automatically at start-up and are recorded in the database. To upgrade, run the installer again and restart the server:
 
 ```bash
-docker pull ghcr.io/arslan-ahm/extshare:latest
+curl -fsSL https://extshare.vercel.app/install.sh | sh -s -- server
+sudo systemctl restart extshare
+```
+
+With Docker, rebuild the image and recreate the container; the volume keeps your data:
+
+```bash
+docker build -t extshare https://extshare.vercel.app/download/Dockerfile
 docker rm -f extshare
-docker run -d --name extshare --restart unless-stopped   --env-file .env -v extshare-data:/data   -p 127.0.0.1:8787:8787 ghcr.io/arslan-ahm/extshare:latest
+docker run -d --name extshare --restart unless-stopped \
+  --env-file .env -v extshare-data:/data \
+  -p 127.0.0.1:8787:8787 extshare
 ```
 
 ## Run from source
 
-For development, or to run without Docker, use [Bun](https://bun.sh) 1.3 or newer:
+For development, use [Bun](https://bun.sh) 1.3 or newer:
 
 ```bash
 git clone https://github.com/arslan-ahm/extshare.git

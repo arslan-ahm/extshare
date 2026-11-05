@@ -1,14 +1,20 @@
-# Installs the extshare CLI on Windows from GitHub Releases.
+# Installs extshare on Windows from https://extshare.vercel.app.
 #
-#   irm https://extshare.vercel.app/install.ps1 | iex
+#   irm https://extshare.vercel.app/install.ps1 | iex                                  # the CLI: extshare
+#   $env:EXTSHARE_COMPONENT='server'; irm https://extshare.vercel.app/install.ps1 | iex  # the server: extshare-server
+#
+# extshare runs on Bun (https://bun.sh). If Bun 1.3 or newer is not installed, this script installs it
+# with Bun's official installer first.
 #
 # Environment:
-#   EXTSHARE_VERSION         release tag to install, e.g. v0.1.0 (default: latest)
-#   EXTSHARE_INSTALL_DIR     where to put extshare.exe (default: %LOCALAPPDATA%\extshare\bin)
-#   EXTSHARE_DOWNLOAD_BASE   override the download URL (used by tests and mirrors)
+#   EXTSHARE_COMPONENT       cli (default) or server
+#   EXTSHARE_HOME            install location (default: %LOCALAPPDATA%\extshare; commands go in its bin folder)
+#   EXTSHARE_BUN             path of bun.exe to use
+#   EXTSHARE_NO_BUN_INSTALL  set to 1 to fail instead of installing Bun
 #   EXTSHARE_NO_MODIFY_PATH  set to 1 to leave your user PATH unchanged
+#   EXTSHARE_DOWNLOAD_BASE   download URL override (used by tests and mirrors)
 #
-# The binary is checked against the release's SHA256SUMS before it is installed.
+# Downloads are checked against SHA256SUMS before anything is installed.
 # Everything runs inside one script block so a partially downloaded script does nothing.
 
 & {
@@ -16,30 +22,50 @@
   $ProgressPreference = 'SilentlyContinue'
   [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
-  $repo = 'arslan-ahm/extshare'
-  $asset = 'extshare-windows-x64.exe'
-  $version = if ($env:EXTSHARE_VERSION) { $env:EXTSHARE_VERSION } else { 'latest' }
-  if ($env:EXTSHARE_DOWNLOAD_BASE) {
-    $base = $env:EXTSHARE_DOWNLOAD_BASE
-  } elseif ($version -eq 'latest') {
-    $base = "https://github.com/$repo/releases/latest/download"
-  } else {
-    $base = "https://github.com/$repo/releases/download/$version"
+  $component = if ($env:EXTSHARE_COMPONENT) { $env:EXTSHARE_COMPONENT } else { 'cli' }
+  switch ($component) {
+    'cli' { $tool = 'extshare' }
+    'server' { $tool = 'extshare-server' }
+    default { throw "extshare install: unknown component '$component'. Use cli (default) or server." }
   }
-  $dir = if ($env:EXTSHARE_INSTALL_DIR) { $env:EXTSHARE_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'extshare\bin' }
+  $file = "$tool.js"
+  $base = if ($env:EXTSHARE_DOWNLOAD_BASE) { $env:EXTSHARE_DOWNLOAD_BASE } else { 'https://extshare.vercel.app/download' }
+  $root = if ($env:EXTSHARE_HOME) { $env:EXTSHARE_HOME } else { Join-Path $env:LOCALAPPDATA 'extshare' }
+  $binDir = Join-Path $root 'bin'
+  $libDir = Join-Path $root 'lib'
 
-  if (-not [Environment]::Is64BitOperatingSystem) {
-    throw 'extshare install: a 64-bit version of Windows is required.'
+  # Find Bun 1.3+, installing it if needed.
+  $bunHome = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
+  if ($env:EXTSHARE_BUN) {
+    $bun = $env:EXTSHARE_BUN
+  } elseif (Get-Command bun -ErrorAction SilentlyContinue) {
+    $bun = (Get-Command bun).Source
+  } elseif (Test-Path $bunHome) {
+    $bun = $bunHome
+  } elseif ($env:EXTSHARE_NO_BUN_INSTALL -eq '1') {
+    throw 'extshare install: Bun 1.3 or newer is required. Install it from https://bun.sh and run this again.'
+  } else {
+    Write-Host 'extshare runs on Bun, which is not installed. Installing it from https://bun.sh ...'
+    # In a child process, so nothing Bun's installer does (exit, preference changes) affects this script.
+    & powershell -NoProfile -ExecutionPolicy Bypass -Command 'irm https://bun.sh/install.ps1 | iex'
+    if ($LASTEXITCODE -ne 0) { throw 'extshare install: installing Bun failed; install it from https://bun.sh and run this again.' }
+    $bun = $bunHome
+  }
+  if (-not (Test-Path $bun)) { throw "extshare install: bun not found at $bun" }
+  $bunVersion = (& $bun --version).Trim()
+  $parts = $bunVersion.Split('.')
+  if ([int]$parts[0] -lt 1 -or ([int]$parts[0] -eq 1 -and [int]$parts[1] -lt 3)) {
+    throw "extshare install: Bun $bunVersion is too old; extshare needs 1.3 or newer. Run: bun upgrade"
   }
 
   $tmp = Join-Path ([IO.Path]::GetTempPath()) ("extshare-" + [Guid]::NewGuid().ToString('N'))
   New-Item -ItemType Directory -Path $tmp | Out-Null
   try {
-    Write-Host "Downloading $asset ($version)..."
-    $exe = Join-Path $tmp $asset
+    Write-Host "Downloading $file..."
+    $js = Join-Path $tmp $file
     $sums = Join-Path $tmp 'SHA256SUMS'
     try {
-      Invoke-WebRequest -UseBasicParsing -Uri "$base/$asset" -OutFile $exe
+      Invoke-WebRequest -UseBasicParsing -Uri "$base/$file" -OutFile $js
       Invoke-WebRequest -UseBasicParsing -Uri "$base/SHA256SUMS" -OutFile $sums
     } catch {
       throw "extshare install: could not download from $base ($($_.Exception.Message))"
@@ -47,30 +73,32 @@
 
     $expected = $null
     foreach ($line in Get-Content $sums) {
-      $parts = $line -split '\s+', 2
-      if ($parts.Count -eq 2 -and $parts[1].TrimStart('*') -eq $asset) { $expected = $parts[0] }
+      $p = $line -split '\s+', 2
+      if ($p.Count -eq 2 -and $p[1].TrimStart('*') -eq $file) { $expected = $p[0] }
     }
-    if (-not $expected) { throw "extshare install: SHA256SUMS has no entry for $asset" }
-    $actual = (Get-FileHash -Algorithm SHA256 $exe).Hash
+    if (-not $expected) { throw "extshare install: SHA256SUMS has no entry for $file" }
+    $actual = (Get-FileHash -Algorithm SHA256 $js).Hash
     if ($actual -ne $expected) {
-      throw "extshare install: checksum mismatch for $asset (expected $expected, got $actual). Nothing was installed."
+      throw "extshare install: checksum mismatch for $file (expected $expected, got $actual). Nothing was installed."
     }
 
-    $installed = & $exe --version
-    if ($LASTEXITCODE -ne 0) { throw 'extshare install: the downloaded binary does not run on this machine' }
+    $version = & $bun $js --version
+    if ($LASTEXITCODE -ne 0) { throw "extshare install: the downloaded $file does not run with $bun" }
 
-    New-Item -ItemType Directory -Force -Path $dir | Out-Null
-    $target = Join-Path $dir 'extshare.exe'
-    Move-Item -Force $exe $target
-    Write-Host "Installed $installed to $target"
+    New-Item -ItemType Directory -Force -Path $binDir, $libDir | Out-Null
+    $target = Join-Path $libDir $file
+    Move-Item -Force $js $target
+    $launcher = Join-Path $binDir "$tool.cmd"
+    Set-Content -Path $launcher -Encoding ASCII -Value "@`"$bun`" `"$target`" %*"
+    Write-Host "Installed ${version}: $launcher"
 
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    $onPath = ($userPath -split ';') -contains $dir
+    $onPath = ($userPath -split ';') -contains $binDir
     if (-not $onPath -and $env:EXTSHARE_NO_MODIFY_PATH -ne '1') {
-      [Environment]::SetEnvironmentVariable('Path', (@($userPath, $dir) | Where-Object { $_ }) -join ';', 'User')
-      Write-Host "Added $dir to your user PATH. Open a new terminal to use 'extshare'."
+      [Environment]::SetEnvironmentVariable('Path', (@($userPath, $binDir) | Where-Object { $_ }) -join ';', 'User')
+      Write-Host "Added $binDir to your user PATH. Open a new terminal to use '$tool'."
     } elseif (-not $onPath) {
-      Write-Host "Add $dir to your PATH to run 'extshare' from anywhere."
+      Write-Host "Add $binDir to your PATH to run '$tool' from anywhere."
     }
   } finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

@@ -8,10 +8,8 @@ description: Every extshare command, its options, output and exit codes.
 
 ## Install
 
-The CLI is a single binary with no dependencies, built for macOS (Apple silicon and Intel), Linux (x64 and arm64) and Windows (x64).
-
 ```bash
-# macOS and Linux
+# macOS and Linux (and Git Bash on Windows)
 curl -fsSL https://extshare.vercel.app/install.sh | sh
 ```
 
@@ -20,15 +18,16 @@ curl -fsSL https://extshare.vercel.app/install.sh | sh
 irm https://extshare.vercel.app/install.ps1 | iex
 ```
 
-The installer downloads the binary for your system from [GitHub Releases](https://github.com/arslan-ahm/extshare/releases), refuses it unless it matches the release's `SHA256SUMS`, and installs it to `~/.extshare/bin` (Windows: `%LOCALAPPDATA%\extshare\bin`). On Windows it adds that folder to your user `PATH`; on macOS and Linux it prints the line to add if the folder is not on your `PATH` yet.
+The CLI runs on [Bun](https://bun.sh) 1.3 or newer; if Bun is missing, the installer installs it first with Bun's official installer. It then downloads the CLI from this site, refuses it unless it matches the published [SHA256SUMS](/download/SHA256SUMS), and installs an `extshare` command in `~/.extshare/bin` (Windows: `%LOCALAPPDATA%extsharein`). On Windows it adds that folder to your user `PATH`; on macOS and Linux it prints the line to add if the folder is not on your `PATH` yet.
 
-| Variable                  | Meaning                                                      |
-| ------------------------- | ------------------------------------------------------------ |
-| `EXTSHARE_VERSION`        | Install a specific release, for example `v0.1.0`.            |
-| `EXTSHARE_INSTALL_DIR`    | Install somewhere else.                                      |
-| `EXTSHARE_NO_MODIFY_PATH` | Windows only: set to `1` to leave your user `PATH` unchanged. |
+| Variable                  | Meaning                                                        |
+| ------------------------- | -------------------------------------------------------------- |
+| `EXTSHARE_HOME`           | Install somewhere else (the command goes in its `bin` folder). |
+| `EXTSHARE_BUN`            | Use a specific `bun` executable.                               |
+| `EXTSHARE_NO_BUN_INSTALL` | Set to `1` to stop instead of installing Bun.                  |
+| `EXTSHARE_NO_MODIFY_PATH` | Windows only: set to `1` to leave your user `PATH` unchanged.  |
 
-To upgrade, run the installer again. To uninstall, delete the binary. You can also download a binary and `SHA256SUMS` from the [releases page](https://github.com/arslan-ahm/extshare/releases) yourself.
+To upgrade, run the installer again; it always installs the version this site publishes (currently shown by `extshare --version` and [/download/VERSION](/download/VERSION)). To uninstall, delete `~/.extshare` (Windows: `%LOCALAPPDATA%extshare`).
 
 ## Commands
 
