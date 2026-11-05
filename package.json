@@ -16,6 +16,8 @@
     "cli": "bun run packages/cli/src/main.ts",
     "build:cli": "bun build packages/cli/src/main.ts --compile --outfile dist/extshare",
     "build:server": "bun build packages/server/src/main.ts --target bun --outdir dist/server",
+    "build:web": "bun run packages/web/src/build.ts",
+    "dev:web": "bun run build:web && bun run packages/web/src/preview.ts",
     "verify:sqlite": "bun test ./packages/server/test/sqlite.owner.ts"
   },
   "devDependencies": {

@@ -125,7 +125,21 @@ For private items, also add each tester's Google account to the item's trusted t
 packages/core     validation, scanning, lifecycle and access rules (pure functions, shared)
 packages/server   Bun + Hono server: API, dashboard, tester gateway, Web Store client, stores
 packages/cli      the extshare command
+packages/web      the website: landing page + docs (static, deployed to Vercel)
 ```
+
+## Website (landing page and docs)
+
+The docs live as Markdown in `packages/web/content/docs/`. The CLI reference embeds the CLI's real `--help` text at build time.
+
+```bash
+bun run build:web     # writes dist/web
+bun run dev:web       # build, then preview at http://127.0.0.1:4321 with Vercel's URL and header rules
+```
+
+**Deploying to Vercel:** in Vercel, choose **Add New > Project**, import `arslan-ahm/extshare`, and keep the root directory as the repository root. `vercel.json` sets the install command, build command, output directory, clean URLs and security headers, so no settings need changing. Every push to `main` then deploys to production, and other branches get preview URLs. The sitemap uses your production domain automatically; set `SITE_URL` in the Vercel project to override it.
+
+The website is static. The extshare server (dashboard, API, tester gateway) needs a persistent disk and a long-running process, so it runs on your own server or container host, not on Vercel.
 
 ## Development
 

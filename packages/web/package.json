@@ -1,0 +1,12 @@
+{
+  "name": "@extshare/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@extshare/cli": "workspace:*"
+  },
+  "devDependencies": {
+    "marked": "^18.1.3"
+  }
+}

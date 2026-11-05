@@ -32,6 +32,9 @@ import { packPath } from "./pack";
 
 type Args = string[];
 
+// States the Web Store will move on its own. `staged` waits for the developer, so --wait stops there.
+const WAITING_ON_STORE = ["uploading", "processing", "in_review"];
+
 const fmtTime = (ms: number) => `${new Date(ms).toISOString().slice(0, 16).replace("T", " ")} UTC`;
 
 function printFindings(ctx: CliContext, findings: Finding[]) {
@@ -315,9 +318,9 @@ export async function publish(ctx: CliContext, args: Args) {
   }
   let { release, invite } = (await res.json()) as PublishResultDto;
 
-  if (values.wait && ["processing", "in_review", "staged", "uploading"].includes(release.state)) {
+  if (values.wait && WAITING_ON_STORE.includes(release.state)) {
     ctx.err("Waiting for the Chrome Web Store (Ctrl+C to stop waiting; the release continues)...");
-    while (["processing", "in_review", "staged", "uploading"].includes(release.state)) {
+    while (WAITING_ON_STORE.includes(release.state)) {
       await ctx.sleep(30_000);
       release = await api.request<ReleaseDto>("POST", `/api/releases/${release.id}/sync`);
     }
