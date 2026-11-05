@@ -28,12 +28,22 @@ extshare revoke          --->  links dead, submission cancelled,
 
 ## Install
 
-Requires [Bun](https://bun.sh) 1.3+.
+**CLI** (single binary, no dependencies):
 
 ```bash
-bun install
-bun run check          # typecheck + lint + tests
-bun run build:cli      # standalone binary at dist/extshare(.exe)
+curl -fsSL https://extshare.vercel.app/install.sh | sh      # macOS and Linux
+```
+
+```powershell
+irm https://extshare.vercel.app/install.ps1 | iex           # Windows (PowerShell)
+```
+
+The installers download the binary for your system from [GitHub Releases](https://github.com/arslan-ahm/extshare/releases) and verify it against the release's `SHA256SUMS` before installing. Set `EXTSHARE_VERSION=v0.1.0` to pin a version.
+
+**Server** (container image for linux/amd64 and linux/arm64):
+
+```bash
+docker pull ghcr.io/arslan-ahm/extshare:latest
 ```
 
 ## Server setup
@@ -53,30 +63,25 @@ Create a second OAuth client (Web application) with redirect URI `https://<your 
 
 ### 3. Configure and run
 
-```bash
-cp .env.example .env     # fill it in; SECRET: openssl rand -base64 48
-bun run server           # reads .env automatically
-```
-
-Run it behind HTTPS. `deploy/Caddyfile` is a ready reverse-proxy config; set `TRUST_PROXY=true` behind it. Or use Docker:
+Start from `.env.example` (SECRET: `openssl rand -base64 48`). Leave `HOST` and `DATA_DIR` unset for Docker; the image listens on `0.0.0.0:8787` and stores data in the `/data` volume.
 
 ```bash
-docker build -t extshare .
-docker run -d --env-file .env -v extshare-data:/data -p 127.0.0.1:8787:8787 extshare
+docker run -d --name extshare --restart unless-stopped   --env-file .env -v extshare-data:/data   -p 127.0.0.1:8787:8787 ghcr.io/arslan-ahm/extshare:latest
 ```
+
+Run it behind HTTPS. `deploy/Caddyfile` is a ready reverse-proxy config; set `TRUST_PROXY=true` behind it.
 
 ### 4. Create the first publisher account
 
 ```bash
-bun run admin create-user --email you@example.com --name "You" --workspace-name "My Team" --role owner
-# Docker: docker exec -it <container> bun admin.js create-user ...
+docker exec -it extshare bun admin.js create-user --email you@example.com --name "You" --workspace-name "My Team" --role owner
 ```
 
-Sign in at `PUBLIC_URL`. The first sign-in enrols an authenticator app (TOTP is mandatory for every dashboard account). Add teammates with `--workspace-id <id>` and `--role publisher` or `--role viewer`. Lost authenticator: `bun run admin reset-mfa --email ...`.
+Sign in at `PUBLIC_URL`. The first sign-in enrols an authenticator app (TOTP is mandatory for every dashboard account). Add teammates with `--workspace-id <id>` and `--role publisher` or `--role viewer`. Lost authenticator: `docker exec -it extshare bun admin.js reset-mfa --email ...`.
 
-### 5. Verify the database layer (owner step)
+### 5. Verify the database layer (owner step, from source)
 
-The automated tests exercise every flow against an in-memory store and check the SQLite mapping against the migration file. They never open a real database. Once, on the machine you deploy to, run the same store contract against real SQLite (it uses throwaway files in your temp directory and deletes them):
+The automated tests exercise every flow against an in-memory store and check the SQLite mapping against the migration file. They never open a real database. From a source checkout (see Development), run the same store contract against real SQLite once; it uses throwaway files in your temp directory and deletes them:
 
 ```bash
 bun run verify:sqlite
@@ -143,10 +148,25 @@ The website is static. The extshare server (dashboard, API, tester gateway) need
 
 ## Development
 
+Requires [Bun](https://bun.sh) 1.3+.
+
 ```bash
-bun test                    # all tests
-bun run typecheck
-bun run lint
+bun install
+bun run check          # typecheck + lint + tests (bun test, bun run typecheck, bun run lint)
+bun run server         # server from source (reads .env)
+bun run cli <command>  # CLI from source
+bun run build:cli      # standalone binary at dist/extshare(.exe)
+bun run dev:web        # website at http://127.0.0.1:4321
 ```
 
 Tests use hand-written fixtures and in-memory fakes for the Web Store and Google. They never call Google or write to a database.
+
+## Releasing
+
+Set the version in `packages/cli/package.json`, merge to `main`, then push a matching tag:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+`.github/workflows/release.yml` refuses a tag that does not match the version, runs the checks, builds and smoke-tests the CLI for five platforms, publishes them with `SHA256SUMS` as a GitHub Release, pushes the server image to `ghcr.io/arslan-ahm/extshare`, and finally installs the CLI from that release with both installers on Linux, macOS and Windows.

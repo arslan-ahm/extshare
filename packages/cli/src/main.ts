@@ -1,7 +1,11 @@
 #!/usr/bin/env bun
+import pkg from "../package.json" with { type: "json" };
 import { ApiError } from "./client";
 import * as cmd from "./commands";
 import { type CliContext, CliError, defaultConfigDir } from "./context";
+
+/** Release version, taken from packages/cli/package.json at build time (the release workflow checks the tag matches). */
+export const VERSION: string = pkg.version;
 
 export const HELP = `extshare: publish Chrome extension test builds and share them with testers
 
@@ -59,7 +63,7 @@ export async function run(argv: string[], ctx: CliContext): Promise<number> {
     return 0;
   }
   if (name === "--version" || name === "version") {
-    ctx.out("extshare 0.1.0");
+    ctx.out(`extshare ${VERSION}`);
     return 0;
   }
   const handler = COMMANDS[name];

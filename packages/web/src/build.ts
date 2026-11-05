@@ -15,6 +15,9 @@ const CONTENT = join(import.meta.dir, "../content/docs");
 /** Self-hosted Geist fonts (SIL OFL); the licence ships next to them. */
 const FONTS = join(import.meta.dir, "fonts");
 export const FONT_FILES = ["Geist-Variable.woff2", "GeistMono-Variable.woff2", "OFL.txt"];
+/** CLI installers, served from the site root (https://<site>/install.sh, /install.ps1). */
+const STATIC = join(import.meta.dir, "../static");
+export const STATIC_FILES = ["install.sh", "install.ps1"];
 export const DEFAULT_OUT = join(ROOT, "dist/web");
 
 export interface Doc {
@@ -172,6 +175,7 @@ export function build(outDir = DEFAULT_OUT, siteUrl = process.env.SITE_URL ?? ve
   for (const p of pages) write(p.path, page(p));
   write("assets/site.css", CSS);
   for (const f of FONT_FILES) write(`assets/fonts/${f}`, readFileSync(join(FONTS, f)));
+  for (const f of STATIC_FILES) write(f, readFileSync(join(STATIC, f)));
   write(
     "favicon.svg",
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="#2c4ecc"/><rect x="9" y="9" width="14" height="14" rx="3" fill="#fff"/></svg>\n',

@@ -6,6 +6,32 @@ description: Every extshare command, its options, output and exit codes.
 
 # CLI reference
 
+## Install
+
+The CLI is a single binary with no dependencies, built for macOS (Apple silicon and Intel), Linux (x64 and arm64) and Windows (x64).
+
+```bash
+# macOS and Linux
+curl -fsSL https://extshare.vercel.app/install.sh | sh
+```
+
+```powershell
+# Windows (PowerShell)
+irm https://extshare.vercel.app/install.ps1 | iex
+```
+
+The installer downloads the binary for your system from [GitHub Releases](https://github.com/arslan-ahm/extshare/releases), refuses it unless it matches the release's `SHA256SUMS`, and installs it to `~/.extshare/bin` (Windows: `%LOCALAPPDATA%\extshare\bin`). On Windows it adds that folder to your user `PATH`; on macOS and Linux it prints the line to add if the folder is not on your `PATH` yet.
+
+| Variable                  | Meaning                                                      |
+| ------------------------- | ------------------------------------------------------------ |
+| `EXTSHARE_VERSION`        | Install a specific release, for example `v0.1.0`.            |
+| `EXTSHARE_INSTALL_DIR`    | Install somewhere else.                                      |
+| `EXTSHARE_NO_MODIFY_PATH` | Windows only: set to `1` to leave your user `PATH` unchanged. |
+
+To upgrade, run the installer again. To uninstall, delete the binary. You can also download a binary and `SHA256SUMS` from the [releases page](https://github.com/arslan-ahm/extshare/releases) yourself.
+
+## Commands
+
 This is the CLI's own help text, taken from the source at build time:
 
 ```

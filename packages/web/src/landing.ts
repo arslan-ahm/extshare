@@ -1,8 +1,12 @@
+import { VERSION } from "@extshare/cli/src/main";
 import type { Doc } from "./build";
 import { GITHUB_URL, type Page } from "./layout";
 
-// Lines below are the CLI's real output format (packages/cli/src/commands.ts), trimmed for space.
-const PUBLISH = `<span class="prompt">$</span> extshare publish ./dist --ttl 7d \\
+// Real output formats, trimmed for space: the installer (static/install.sh) and `extshare publish` (packages/cli/src/commands.ts).
+const PUBLISH = `<span class="prompt">$</span> curl -fsSL https://extshare.vercel.app/install.sh | sh
+<span class="dim">Installed extshare ${VERSION} to /home/you/.extshare/bin/extshare</span>
+
+<span class="prompt">$</span> extshare publish ./dist --ttl 7d \\
     --testers dana@example.com,lee@example.com
 <span class="dim">Uploading Tab Notes 1.4.0 (182.4 KB)...</span>
 Version   1.4.0
@@ -14,10 +18,10 @@ Share link (shown once, valid until 2026-11-12 14:05 UTC):
 <span class="dim">The Web Store is reviewing this version. Testers see
 the install button once it is live.</span>`;
 
-const DOCKER = `docker build -t extshare .
-docker run -d --env-file .env \\
-  -v extshare-data:/data \\
-  -p 127.0.0.1:8787:8787 extshare`;
+const DOCKER = `docker run -d --name extshare \\
+  --env-file .env -v extshare-data:/data \\
+  -p 127.0.0.1:8787:8787 \\
+  ghcr.io/arslan-ahm/extshare:latest`;
 
 export function landingPage(_docs: Doc[]): Page {
   return {
@@ -38,7 +42,7 @@ export function landingPage(_docs: Doc[]): Page {
   </div>
   <figure class="terminal">
     <pre aria-label="Example: publishing a test build"><code>${PUBLISH}</code></pre>
-    <figcaption>One command uploads the build and prints a share link. Output trimmed.</figcaption>
+    <figcaption>Install the CLI once. Then one command uploads a build and prints a share link. Output trimmed.</figcaption>
   </figure>
 </section>
 
@@ -149,7 +153,7 @@ export function landingPage(_docs: Doc[]): Page {
 <section class="selfhost" aria-labelledby="selfhost-title">
   <div>
     <h2 id="selfhost-title">Runs on your own server</h2>
-    <p>One Bun process with SQLite and a data folder. Your Web Store credentials and your testers' data stay with you.</p>
+    <p>One container with SQLite and a data volume. Your Web Store credentials and your testers' data stay with you.</p>
     <a class="btn btn-primary" href="/docs/server">Read the server guide</a>
   </div>
   <pre aria-label="Docker example"><code>${DOCKER}</code></pre>

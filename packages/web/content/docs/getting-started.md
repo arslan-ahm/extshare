@@ -1,50 +1,53 @@
 ---
 title: Getting started
 order: 2
-description: Deploy the extshare server, create your account, and publish your first test build.
+description: Run the extshare server, create your account, install the CLI, and publish your first test build.
 ---
 
 # Getting started
 
-You need [Bun](https://bun.sh) 1.3 or newer, a server with a persistent disk and HTTPS, a Chrome Web Store developer account, and a Google Cloud project.
+You need a server with Docker, a persistent disk and HTTPS, a Chrome Web Store developer account, and a Google Cloud project.
 
 ## 1. Prepare the Chrome Web Store item
 
 Create the extension's item once in the [Developer Dashboard](https://chrome.google.com/webstore/devconsole/), fill in the **Store listing** and **Privacy** tabs, and choose its visibility (Private or Unlisted). Note the 32-letter item ID. Then create publishing credentials. Both steps are covered in [Chrome Web Store setup](/docs/web-store).
 
-## 2. Deploy the server
+## 2. Run the server
+
+Create a `.env` file with your settings. [Server configuration](/docs/server) lists every variable, and the repository has a commented [.env.example](https://github.com/arslan-ahm/extshare/blob/main/.env.example) to start from. Then start the published image:
 
 ```bash
-git clone https://github.com/arslan-ahm/extshare.git
-cd extshare
-bun install
-cp .env.example .env    # fill it in, see Server configuration
-bun run server
+docker run -d --name extshare --restart unless-stopped \
+  --env-file .env -v extshare-data:/data \
+  -p 127.0.0.1:8787:8787 ghcr.io/arslan-ahm/extshare:latest
 ```
 
-Put it behind HTTPS. The repository includes a Dockerfile and a Caddy reverse-proxy config; see [Server configuration](/docs/server).
-
-Once, on the machine you deploy to, check the database layer against real SQLite. It uses throwaway files in your temp directory:
-
-```bash
-bun run verify:sqlite
-```
+If a setting is missing, the container stops and `docker logs extshare` lists what to fix. Put the server behind HTTPS; [Server configuration](/docs/server#https-and-reverse-proxy) has a ready Caddy config.
 
 ## 3. Create your account
 
 ```bash
-bun run admin create-user --email you@example.com --name "You" --workspace-name "My Team" --role owner
+docker exec -it extshare bun admin.js create-user \
+  --email you@example.com --name "You" --workspace-name "My Team" --role owner
 ```
 
 Open your server's URL and sign in. The first sign-in asks you to scan a QR code with an authenticator app; every dashboard account uses two-factor authentication.
 
 ## 4. Install the CLI
 
+macOS and Linux:
+
 ```bash
-bun run build:cli          # produces dist/extshare (dist/extshare.exe on Windows)
+curl -fsSL https://extshare.vercel.app/install.sh | sh
 ```
 
-Put the binary on your `PATH`, or run commands from the repository with `bun run cli <command>`.
+Windows (PowerShell):
+
+```powershell
+irm https://extshare.vercel.app/install.ps1 | iex
+```
+
+The installer downloads the binary for your system from the [latest release](https://github.com/arslan-ahm/extshare/releases/latest), checks it against the release's SHA-256 checksums, and puts it on your `PATH`. Check it with `extshare --version`. The [CLI reference](/docs/cli#install) covers other versions and install locations.
 
 ## 5. Publish your first build
 

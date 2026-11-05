@@ -1,0 +1,182 @@
+# Builds and publishes a release when a tag like v0.1.0 is pushed:
+#   - standalone CLI binaries + SHA256SUMS on the GitHub Release (installed by /install.sh and /install.ps1)
+#   - the server image at ghcr.io/arslan-ahm/extshare
+# Then installs the CLI from that release on Linux, macOS and Windows to prove the installers work.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  BUN_VERSION: 1.3.13
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - name: Tag matches the CLI version
+        run: |
+          v="$(bun -e 'console.log((await Bun.file("packages/cli/package.json").json()).version)')"
+          if [ "v$v" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match packages/cli/package.json version $v" >&2
+            exit 1
+          fi
+      - run: bunx tsc -p . --noEmit
+      - run: bunx biome ci .
+      - run: bun test
+
+  cli:
+    needs: check
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { runner: ubuntu-latest, target: bun-linux-x64, asset: extshare-linux-x64, smoke: true }
+          - { runner: ubuntu-24.04-arm, target: bun-linux-arm64, asset: extshare-linux-arm64, smoke: true }
+          - { runner: macos-latest, target: bun-darwin-arm64, asset: extshare-darwin-arm64, smoke: true }
+          - { runner: macos-latest, target: bun-darwin-x64, asset: extshare-darwin-x64, smoke: false }
+          - { runner: windows-latest, target: bun-windows-x64, asset: extshare-windows-x64.exe, smoke: true }
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - name: Build
+        run: bun build packages/cli/src/main.ts --compile --minify --target=${{ matrix.target }} --outfile "dist/release/${{ matrix.asset }}"
+      - name: Sign (macOS ad-hoc signature, required on Apple silicon)
+        if: runner.os == 'macOS'
+        run: |
+          codesign --force --sign - "dist/release/${{ matrix.asset }}"
+          codesign --verify --verbose "dist/release/${{ matrix.asset }}"
+      - name: Smoke test
+        if: matrix.smoke
+        run: |
+          out="$("./dist/release/${{ matrix.asset }}" --version)"
+          echo "$out"
+          [ "$out" = "extshare ${GITHUB_REF_NAME#v}" ]
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/release/${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    needs: cli
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/release
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist/release
+        run: |
+          sha256sum extshare-* > SHA256SUMS
+          cat SHA256SUMS
+          [ "$(wc -l < SHA256SUMS)" -eq 5 ]
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/release/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/release/* --verify-tag --title "extshare $GITHUB_REF_NAME" --notes "Install the CLI:
+
+          - macOS and Linux: \`curl -fsSL https://extshare.vercel.app/install.sh | sh\`
+          - Windows (PowerShell): \`irm https://extshare.vercel.app/install.ps1 | iex\`
+
+          Run the server: \`docker pull ghcr.io/arslan-ahm/extshare:${GITHUB_REF_NAME#v}\`
+
+          Binaries are listed in SHA256SUMS; the installers verify them."
+          fi
+
+  docker:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+      - name: Smoke test (starts, then refuses to run without configuration)
+        run: |
+          img="ghcr.io/${{ github.repository }}:${GITHUB_REF_NAME#v}"
+          set +e
+          out="$(docker run --rm "$img" 2>&1)"
+          code=$?
+          set -e
+          echo "$out"
+          [ "$code" -eq 1 ]
+          echo "$out" | grep -q "PUBLIC_URL"
+
+  verify-install:
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.sh
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          EXTSHARE_VERSION="$GITHUB_REF_NAME" EXTSHARE_INSTALL_DIR="$RUNNER_TEMP/bin" sh packages/web/static/install.sh
+          [ "$("$RUNNER_TEMP/bin/extshare" --version)" = "extshare ${GITHUB_REF_NAME#v}" ]
+      - name: install.ps1 (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $env:EXTSHARE_VERSION = $env:GITHUB_REF_NAME
+          $env:EXTSHARE_INSTALL_DIR = Join-Path $env:RUNNER_TEMP 'bin51'
+          $env:EXTSHARE_NO_MODIFY_PATH = '1'
+          ./packages/web/static/install.ps1
+          $v = & (Join-Path $env:EXTSHARE_INSTALL_DIR 'extshare.exe') --version
+          if ($v -ne "extshare $($env:GITHUB_REF_NAME.TrimStart('v'))") { throw "unexpected version: $v" }
+      - name: install.ps1 (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:EXTSHARE_VERSION = $env:GITHUB_REF_NAME
+          $env:EXTSHARE_INSTALL_DIR = Join-Path $env:RUNNER_TEMP 'bin7'
+          $env:EXTSHARE_NO_MODIFY_PATH = '1'
+          ./packages/web/static/install.ps1
+          $v = & (Join-Path $env:EXTSHARE_INSTALL_DIR 'extshare.exe') --version
+          if ($v -ne "extshare $($env:GITHUB_REF_NAME.TrimStart('v'))") { throw "unexpected version: $v" }

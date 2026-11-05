@@ -3,7 +3,8 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:f
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { HELP } from "@extshare/cli/src/main";
-import { build, FONT_FILES, loadDocs, renderDoc } from "../src/build";
+import { build, FONT_FILES, loadDocs, renderDoc, STATIC_FILES } from "../src/build";
+import { GITHUB_URL } from "../src/layout";
 import { createPreview } from "../src/preview";
 
 const ROOT = join(import.meta.dir, "../../..");
@@ -37,6 +38,7 @@ describe("site build", () => {
       "404.html",
       "assets/site.css",
       ...FONT_FILES.map((f) => `assets/fonts/${f}`),
+      ...STATIC_FILES,
       "favicon.svg",
       "robots.txt",
       "sitemap.xml",
@@ -177,6 +179,81 @@ describe("preview server mirrors Vercel", () => {
     ].map((m) => m[1]!);
     expect(refs.length).toBeGreaterThanOrEqual(3);
     for (const r of refs) expect(get(r).status).toBe(200);
+  });
+
+  test("installers are served as plain text with a short cache", async () => {
+    for (const path of ["/install.sh", "/install.ps1"]) {
+      const r = get(path);
+      expect(r.status).toBe(200);
+      expect(r.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+      expect(r.headers.get("cache-control")).toBe("public, max-age=300");
+      expect(await r.text()).toBe(readFileSync(join(import.meta.dir, "../static", path.slice(1)), "utf8"));
+    }
+  });
+});
+
+describe("release workflow and installers agree", () => {
+  const workflow = readFileSync(join(ROOT, ".github/workflows/release.yml"), "utf8");
+  const sh = readFileSync(join(import.meta.dir, "../static/install.sh"), "utf8");
+  const ps1 = readFileSync(join(import.meta.dir, "../static/install.ps1"), "utf8");
+  const built = [...workflow.matchAll(/asset: (extshare-[\w.-]+)/g)].map((m) => m[1]!).sort();
+
+  test("the workflow builds exactly the binaries the installers can request", () => {
+    // install.sh: os in {linux, darwin} x arch in {x64, arm64}; Windows (both scripts) always takes x64.
+    const requested = ["linux", "darwin"]
+      .flatMap((os) => ["x64", "arm64"].map((arch) => `extshare-${os}-${arch}`))
+      .concat("extshare-windows-x64.exe")
+      .sort();
+    expect(built).toEqual(requested);
+    expect(sh).toContain('asset="extshare-$os-$arch"');
+    expect(sh).toContain('asset="extshare-windows-x64.exe"');
+    expect(ps1).toContain("$asset = 'extshare-windows-x64.exe'");
+    // The release job refuses to publish unless SHA256SUMS covers every built binary.
+    expect(workflow).toContain(`[ "$(wc -l < SHA256SUMS)" -eq ${built.length} ]`);
+  });
+
+  test("installers, workflow and site point at the same repository", () => {
+    const repo = GITHUB_URL.replace("https://github.com/", "");
+    expect(sh).toContain(`REPO="${repo}"`);
+    expect(ps1).toContain(`$repo = '${repo}'`);
+    expect(workflow).toContain("ghcr.io/arslan-ahm/extshare");
+    expect(repo).toBe("arslan-ahm/extshare");
+  });
+
+  test(".env.example never overrides the Docker image's listen address or data volume", () => {
+    const example = readFileSync(join(ROOT, ".env.example"), "utf8");
+    const active = example
+      .split("\n")
+      .filter((l) => /^[A-Z_]+=/.test(l))
+      .map((l) => l.split("=")[0]);
+    expect(active).toContain("PUBLIC_URL"); // precondition: the parse found the real settings
+    expect(active).not.toContain("HOST");
+    expect(active).not.toContain("DATA_DIR");
+    const dockerfile = readFileSync(join(ROOT, "Dockerfile"), "utf8");
+    expect(dockerfile).toMatch(/ENV DATA_DIR=\/data HOST=0\.0\.0\.0/);
+    expect(dockerfile).toContain('VOLUME ["/data"]');
+  });
+
+  test("docs install tools instead of cloning the repository", () => {
+    const docs = loadDocs();
+    const all = docs.map((d) => d.html).join("\n");
+    expect(all).toContain("https://extshare.vercel.app/install.sh");
+    expect(all).toContain("https://extshare.vercel.app/install.ps1");
+    expect(all).toContain("ghcr.io/arslan-ahm/extshare:latest");
+    for (const d of docs) {
+      // Only the server guide may mention a source checkout, and only in its "Run from source" section.
+      const clone = d.html.indexOf("git clone");
+      if (clone === -1) continue;
+      expect(d.slug).toBe("server");
+      expect(clone).toBeGreaterThan(d.html.indexOf('id="run-from-source"'));
+    }
+    expect(html("index.html")).toContain("curl -fsSL https://extshare.vercel.app/install.sh | sh");
+    expect(html("index.html")).not.toContain("docker build");
+  });
+
+  test("the release is gated on the tag matching the CLI version", () => {
+    expect(workflow).toContain('if [ "v$v" != "$GITHUB_REF_NAME" ]');
+    expect(workflow).toContain("bun test");
   });
 });
 
