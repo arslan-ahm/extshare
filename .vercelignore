@@ -1,0 +1,8 @@
+# Vercel builds the website from source; never upload local builds, data or secrets.
+node_modules
+dist
+data
+.env
+.env.*
+*.zip
+coverage
